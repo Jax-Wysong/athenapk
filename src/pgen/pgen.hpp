@@ -55,6 +55,12 @@ void UserWorkAfterLoop(Mesh *mesh, parthenon::ParameterInput *pin,
                        parthenon::SimTime &tm);
 } // namespace blast
 
+namespace mhd_blast {
+using namespace parthenon::driver::prelude;
+
+void ProblemGenerator(MeshBlock *pmb, parthenon::ParameterInput *pin);
+} // namespace mhd_blast
+
 namespace advection {
 using namespace parthenon::driver::prelude;
 
@@ -87,6 +93,13 @@ using namespace parthenon::driver::prelude;
 void ProblemGenerator(MeshBlock *pmb, parthenon::ParameterInput *pin);
 void ProblemInitPackageData(ParameterInput *pin, parthenon::StateDescriptor *pkg);
 } // namespace field_loop
+
+namespace mhd_cloudShock {
+using namespace parthenon::driver::prelude;
+
+void ProblemGenerator(MeshBlock *pmb, parthenon::ParameterInput *pin);
+void FixedInnerX1(std::shared_ptr<MeshBlockData<Real>> &mbd, bool coarse);
+} // namespace mhd_cloudShock
 
 namespace smooth_mhd_vortex {
 using namespace parthenon::driver::prelude;

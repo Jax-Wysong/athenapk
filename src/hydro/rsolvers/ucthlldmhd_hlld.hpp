@@ -42,11 +42,12 @@ struct UCTHLLDCons1D {
 
 template <>
 struct Riemann<Fluid::ucthlldmhd, RiemannSolver::hlld> {
+  template <bool point_flux, typename FluxPack>
   static KOKKOS_INLINE_FUNCTION void
   Solve(parthenon::team_mbr_t const &member, const int k, const int j, const int il,
         const int iu, const int ivx, const ScratchPad2D<Real> &wl,
         const ScratchPad2D<Real> &wr, 
-        VariableFluxPack<Real> &cons, 
+        FluxPack &flux_out,
         VariablePack<Real> &uct_hlld,
         const AdiabaticCTMHDEOS &eos, const Real /*c_h*/) {
     const int ivy = IV1 + ((ivx - IV1) + 1) % 3;
@@ -378,15 +379,46 @@ struct Riemann<Fluid::ucthlldmhd, RiemannSolver::hlld> {
         flxi[IB3] = fr.bz + urst.bz + urdst.bz;
       }
 
-      cons.flux(ivx, IDN, k, j, i) = flxi[IDN];
-      cons.flux(ivx, ivx, k, j, i) = flxi[IV1];
-      cons.flux(ivx, ivy, k, j, i) = flxi[IV2];
-      cons.flux(ivx, ivz, k, j, i) = flxi[IV3];
-      cons.flux(ivx, IEN, k, j, i) = flxi[IEN];
-      cons.flux(ivx, iBx, k, j, i) = flxi[IB1];
-      cons.flux(ivx, iBy, k, j, i) = flxi[IB2];
-      cons.flux(ivx, iBz, k, j, i) = flxi[IB3];
 
+      if constexpr (point_flux) {
+        if (ivx == IV1){
+          flux_out(TE::F1, IDN, k, j, i) = flxi[IDN];
+          flux_out(TE::F1, ivx, k, j, i) = flxi[IV1];
+          flux_out(TE::F1, ivy, k, j, i) = flxi[IV2];
+          flux_out(TE::F1, ivz, k, j, i) = flxi[IV3];
+          flux_out(TE::F1, IEN, k, j, i) = flxi[IEN];
+          flux_out(TE::F1, iBx, k, j, i) = flxi[IB1];
+          flux_out(TE::F1, iBy, k, j, i) = flxi[IB2];
+          flux_out(TE::F1, iBz, k, j, i) = flxi[IB3];
+        } else if (ivx == IV2){
+          flux_out(TE::F2, IDN, k, j, i) = flxi[IDN];
+          flux_out(TE::F2, ivx, k, j, i) = flxi[IV1];
+          flux_out(TE::F2, ivy, k, j, i) = flxi[IV2];
+          flux_out(TE::F2, ivz, k, j, i) = flxi[IV3];
+          flux_out(TE::F2, IEN, k, j, i) = flxi[IEN];
+          flux_out(TE::F2, iBx, k, j, i) = flxi[IB1];
+          flux_out(TE::F2, iBy, k, j, i) = flxi[IB2];
+          flux_out(TE::F2, iBz, k, j, i) = flxi[IB3];
+        } else if (ivx == IV3){
+          flux_out(TE::F3, IDN, k, j, i) = flxi[IDN];
+          flux_out(TE::F3, ivx, k, j, i) = flxi[IV1];
+          flux_out(TE::F3, ivy, k, j, i) = flxi[IV2];
+          flux_out(TE::F3, ivz, k, j, i) = flxi[IV3];
+          flux_out(TE::F3, IEN, k, j, i) = flxi[IEN];
+          flux_out(TE::F3, iBx, k, j, i) = flxi[IB1];
+          flux_out(TE::F3, iBy, k, j, i) = flxi[IB2];
+          flux_out(TE::F3, iBz, k, j, i) = flxi[IB3];
+        }
+      } else {
+        flux_out.flux(ivx, IDN, k, j, i) = flxi[IDN];
+        flux_out.flux(ivx, ivx, k, j, i) = flxi[IV1];
+        flux_out.flux(ivx, ivy, k, j, i) = flxi[IV2];
+        flux_out.flux(ivx, ivz, k, j, i) = flxi[IV3];
+        flux_out.flux(ivx, IEN, k, j, i) = flxi[IEN];
+        flux_out.flux(ivx, iBx, k, j, i) = flxi[IB1];
+        flux_out.flux(ivx, iBy, k, j, i) = flxi[IB2];
+        flux_out.flux(ivx, iBz, k, j, i) = flxi[IB3];
+      }
 
       // following Mignone/Del Zanna (2021) [MDZ21]systematic construction of
       // UCT schemes for the UCT-HLLD scheme

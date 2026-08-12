@@ -28,6 +28,9 @@ if (
     )
 
 rule run_field_loop:
+    input:
+        exe=config["athenapk"],
+        deck=FIELD_LOOP["input"]
     output:
         done=f"{config['results_root']}/{config['dimension']}/{{fluid}}/{FIELD_LOOP['dirname']}/phdf-files/run.done"
     log:
@@ -45,7 +48,12 @@ rule run_field_loop:
         mb_nx3=FIELD_LOOP_MESH["mb_nx3"],
         iprob=FIELD_LOOP_MESH["iprob"]
     resources:
-        runtime=120
+        runtime=360,
+        mem_mb=10000
+        #nodes=1,
+        #tasks=8,
+        #mpi="srun",
+        #mem_mb_per_cpu=10000
         #mem_mb=(default for now) mb means megabyte
         #slurm_partition=(default for now)
         # see https://snakemake.github.io/snakemake-plugin-catalog/plugins/executor/slurm.html
@@ -60,12 +68,13 @@ rule run_field_loop:
         rm -f {output.done}
         cd {params.rundir}
 
-        {config[athenapk]} -i {FIELD_LOOP[input]} \
+        {input.exe} -i {input.deck} \
           problem/field_loop/iprob={params.iprob} \
           parthenon/job/problem_id={params.problem_id} \
           parthenon/mesh/nx1={params.nx1} \
           parthenon/mesh/nx2={params.nx2} \
           parthenon/mesh/nx3={params.nx3} \
+          parthenon/mesh/nghost=3 \
           parthenon/meshblock/nx1={params.mb_nx1} \
           parthenon/meshblock/nx2={params.mb_nx2} \
           parthenon/meshblock/nx3={params.mb_nx3} \
@@ -75,6 +84,9 @@ rule run_field_loop:
           hydro/fluid={wildcards.fluid} \
           hydro/riemann={config[riemann]} \
           hydro/reconstruction={config[reconstruction]} \
+          hydro/convergence_order={config[convergence_order]} \
+          hydro/discontinuity_detector={config[discontinuity_detector]} \
+          hydro/discontinuity_detector_threshold={config[discontinuity_detector_threshold]} \
           hydro/gamma=1.666666666666667 \
           parthenon/output0/file_type=hdf5 \
           parthenon/output0/dt=0.02 \

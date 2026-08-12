@@ -1,13 +1,13 @@
 #!/bin/bash --login
-#SBATCH --job-name=snmake
+#SBATCH --job-name=100turb
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
-#SBATCH --time=01-08:00:00
-#SBATCH --output=/mnt/home/wysongj2/athenapk/workflow/logs/snakemake-controller.%j.out
-#SBATCH --error=/mnt/home/wysongj2/athenapk/workflow/logs/snakemake-controller.%j.err
+#SBATCH --time=00-07:00:00
+#SBATCH --output=/mnt/home/wysongj2/athenapk-fourth-Berta24/workflow/logs/snakemake-controller.%j.out
+#SBATCH --error=/mnt/home/wysongj2/athenapk-fourth-Berta24/workflow/logs/snakemake-controller.%j.err
 
-cd /mnt/home/wysongj2/athenapk
+cd /mnt/home/wysongj2/athenapk-fourth-Berta24
 
 # dry run command for copy paste
 # snakemake -s workflow/Snakefile   --configfile workflow/config.yaml -n
@@ -19,13 +19,17 @@ module load Miniforge3/25.11.0-1
 source $(conda info --base)/etc/profile.d/conda.sh
 conda activate snakemake
 
+module load foss/2023a
+module load HDF5/1.14.0-gompi-2023a
+
 snakemake -s workflow/Snakefile \
   --configfile workflow/config.yaml \
   --executor slurm \
-  --jobs 24 \
+  --jobs 10 \
   --rerun-incomplete \
   --keep-going \
   --latency-wait 60 \
+  --use-envmodules \
   --slurm-logdir workflow/logs/slurm
 
 

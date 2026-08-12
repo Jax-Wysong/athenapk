@@ -1,23 +1,28 @@
 plotting_python: /mnt/home/wysongj2/.conda/envs/mhd/bin/python
 gnuplot: /mnt/home/wysongj2/.conda/envs/mhd/bin/gnuplot
-athenapk: /mnt/home/wysongj2/athenapk/build-host/bin/athenaPK
+athenapk: /mnt/home/wysongj2/athenapk-fourth-Berta24/build-host/bin/athenaPK
 # cannot currently use mpi if want .pdhf's
 # h5py not compatible. But good for convergence test runs
-athenapk_mpi: /mnt/home/wysongj2/athenapk/build-mpi/bin/athenaPK
+athenapk_mpi: /mnt/home/wysongj2/athenapk-fourth-Berta24/build-mpi/bin/athenaPK
+athenapk_mpi_hdf5: /mnt/home/wysongj2/athenapk-fourth-Berta24/build-mpi-site-hdf5/bin/athenaPK
 
-results_root: /mnt/home/wysongj2/athenapk/test-suite-uct-ct-glm
+results_root: /mnt/gs21/scratch/wysongj2/turbulence/4th-order/full-test-beta100
 report_description: report/workflow.rst
 
-dimension: 2D
+dimension: 3D
 
 fluids:
-  - ctmhd
+  # - ctmhd
   - ucthlldmhd
-  - glmmhd
+  # - glmmhd
 
-reconstruction: plm
+# reconstruction: plm
+reconstruction: wenoz_point
 riemann: hlld
-integrator: rk2
+integrator: rk4
+convergence_order : 4
+discontinuity_detector : hod
+discontinuity_detector_threshold : 0.5
 
 
 
@@ -28,15 +33,15 @@ tests:
     input: /mnt/home/wysongj2/athenapk/inputs/ct_glm_compatible/smooth_mhd_vortex.in
     dirname: smooth_mhd_vortex
     order_script: /mnt/home/wysongj2/athenapk/workflow/diagnostics_scripts/compute_smooth_vortex_orders.py
-    resolutions: [16, 32, 64, 128, 256]
+    resolutions: [16, 32, 64, 128, 256, 512]
 
   linear_wave:
     enabled: false
-    input: /mnt/home/wysongj2/athenapk/inputs/ct_glm_compatible/linear_mhd_wave.in
+    input: /mnt/home/wysongj2/athenapk-fourth-Berta24/inputs/ct_glm_compatible/linear_mhd_wave.in
     dirname: linear_mhd_wave_unrefined
-    order_script: /mnt/home/wysongj2/athenapk/workflow/diagnostics_scripts/linear_mhd_wave_orders.py
+    order_script: /mnt/home/wysongj2/athenapk-fourth-Berta24/workflow/diagnostics_scripts/linear_mhd_wave_orders.py
     waves: [0, 1, 2, 4, 5, 6]
-    resolutions: [16, 32, 64, 128]
+    resolutions: [4, 8, 16, 32, 64]
 
     mesh:
       2D:
@@ -44,6 +49,32 @@ tests:
 
       
       3D:
+
+  # Separate directional-symmetry suite. The signed integer triplets are periodic
+  # wavevector winding numbers, not velocities. Mode 6 therefore travels in the
+  # labeled grid direction while the existing all-family linear_wave suite remains
+  # unchanged.
+  linear_wave_directions:
+    enabled: false
+    input: /mnt/home/wysongj2/athenapk-fourth-Berta24/inputs/ct_glm_compatible/linear_mhd_wave.in
+    dirname: linear_mhd_wave_directions
+    order_script: /mnt/home/wysongj2/athenapk-fourth-Berta24/workflow/diagnostics_scripts/linear_mhd_wave_orders.py
+    plotting_script: /mnt/home/wysongj2/athenapk-fourth-Berta24/workflow/diagnostics_scripts/linear_wave_direction_viz.py
+    wave: 1
+    resolutions: [4, 8, 16, 32, 64]
+    visualization_resolution: 64
+    output_dt: 0.01
+    fps: 8
+
+    directions:
+      right: [1, 0, 0]
+      left: [-1, 0, 0]
+      up: [0, 1, 0]
+      down: [0, -1, 0]
+      up-right: [1, 1, 0]
+      up-left: [-1, 1, 0]
+      down-right: [1, -1, 0]
+      down-left: [-1, -1, 0]
 
   linear_wave_static:
     enabled: false
@@ -81,9 +112,9 @@ tests:
 
   cpaw:
     enabled: false
-    input: /mnt/home/wysongj2/athenapk/inputs/ct_glm_compatible/cpaw.in
+    input: /mnt/home/wysongj2/athenapk-fourth-Berta24/inputs/ct_glm_compatible/cpaw.in
     dirname: cpaw
-    order_script: /mnt/home/wysongj2/athenapk/workflow/diagnostics_scripts/cpaw_orders.py
+    order_script: /mnt/home/wysongj2/athenapk-fourth-Berta24/workflow/diagnostics_scripts/cpaw_orders.py
     resolutions: [16, 32, 64, 128]
 
     mesh:
@@ -145,9 +176,9 @@ tests:
 
   field_loop:
     enabled: false
-    input: /mnt/home/wysongj2/athenapk/inputs/ct_glm_compatible/field_loop.in
+    input: /mnt/home/wysongj2/athenapk-fourth-Berta24/inputs/ct_glm_compatible/field_loop.in
     dirname: field_loop
-    plotting_script: /mnt/home/wysongj2/athenapk/workflow/diagnostics_scripts/field_loop_video.py
+    plotting_script: /mnt/home/wysongj2/athenapk-fourth-Berta24/workflow/diagnostics_scripts/field_loop_video.py
   
     paraview_movie:
         enabled: false
@@ -174,7 +205,7 @@ tests:
         iprob: 4
 
   field_loop_orientations:
-    enabled: true
+    enabled: false
     input: /mnt/home/wysongj2/athenapk/inputs/ct_glm_compatible/field_loop.in
     dirname: field_loop_orientations
     plotting_script: /mnt/home/wysongj2/athenapk/workflow/diagnostics_scripts/field_loop_video.py
@@ -267,10 +298,11 @@ tests:
 
   orszag_tang:
     enabled: false
-    input: /mnt/home/wysongj2/athenapk/inputs/ct_glm_compatible/orszag_tang.in
+    input: /mnt/home/wysongj2/athenapk-fourth-Berta24/inputs/ct_glm_compatible/orszag_tang.in
     dirname: orszag_tang
-    plotting_script: /mnt/home/wysongj2/athenapk/workflow/diagnostics_scripts/orszag_tang_video.py
+    plotting_script: /mnt/home/wysongj2/athenapk-fourth-Berta24/workflow/diagnostics_scripts/orszag_tang_video.py
     resolution: [256, 256]
+    meshblock: [256, 256]
 
   orszag_tang_refined:
     enabled: false
@@ -319,10 +351,93 @@ tests:
   current_sheet:
     enabled: false
     fluids:
-      - ctmhd
+      # - ctmhd
       - ucthlldmhd
-    input: /mnt/home/wysongj2/athenapk/inputs/ct_glm_compatible/current_sheet.in
+    input: /mnt/home/wysongj2/athenapk-fourth-Berta24/inputs/ct_glm_compatible/current_sheet.in
     dirname: current_sheet
-    plotting_script: /mnt/home/wysongj2/athenapk/workflow/diagnostics_scripts/current_sheet_movie.py
-    field_line_script: /mnt/home/wysongj2/athenapk/workflow/diagnostics_scripts/current_sheet_field_lines.py
+    plotting_script: /mnt/home/wysongj2/athenapk-fourth-Berta24/workflow/diagnostics_scripts/current_sheet_movie.py
+    field_line_script: /mnt/home/wysongj2/athenapk-fourth-Berta24/workflow/diagnostics_scripts/current_sheet_field_lines.py
     resolution: [256, 256]
+    meshblock: [256, 256]
+
+  mhd_cloud_shock:
+    enabled: false
+    fluids:
+      - ucthlldmhd
+    input: /mnt/home/wysongj2/athenapk-fourth-Berta24/inputs/ct_glm_compatible/mhd_cloud_shock.in
+    dirname: mhd_cloud_shock
+    plotting_script: /mnt/home/wysongj2/athenapk-fourth-Berta24/workflow/diagnostics_scripts/mhd_cloud_shock_density.py
+    resolution: [256, 256, 256]
+    meshblock: [64, 64, 64]
+    output_dt: 0.002
+    fps: 8
+    detector_epsilon: 1.0e-12
+    mpi_tasks: 64
+    mem_mb_per_cpu: 1200
+
+  mhd_blast:
+    enabled: false
+    fluids:
+      - ucthlldmhd
+    input: /mnt/home/wysongj2/athenapk-fourth-Berta24/inputs/ct_glm_compatible/mhd_blast.in
+    dirname: mhd_blast
+    plotting_script: /mnt/home/wysongj2/athenapk-fourth-Berta24/workflow/diagnostics_scripts/mhd_blast_density.py
+    resolution: [192, 192, 192]
+    meshblock: [48, 48, 48]
+    tlim: 0.2
+    output_dt: 0.01
+    fps: 8
+    detector_epsilon: 1.0e-12
+    mpi_tasks: 64
+    mem_mb_per_cpu: 1200
+
+  # Driven-turbulence comparison between native GLM-MHD and the second- and
+  # fourth-order UCT-HLLD schemes. This remains independent of the global
+  # reconstruction settings above.
+  turbulence:
+    enabled: true
+    input: /mnt/home/wysongj2/athenapk-fourth-Berta24/inputs/turbulence_weno_compare.in
+    dirname: turbulence
+    output_group: mhd_comparison
+    energy_plotting_script: /mnt/home/wysongj2/athenapk-fourth-Berta24/workflow/diagnostics_scripts/turbulence_energies.py
+    slice_plotting_script: /mnt/home/wysongj2/athenapk-fourth-Berta24/workflow/diagnostics_scripts/turbulence_slices.py
+    resolution: [128, 128, 128]
+    meshblock: [32, 32, 32]
+    tlim: 15.0
+    history_dt: 0.005
+    output_dt: 5.0
+    cases:
+      weno3:
+        label: GLM-HLLD WENO3 + VL2
+        fluid: glmmhd
+        riemann: hlld
+        reconstruction: weno3
+        integrator: vl2
+        convergence_order: 2
+        first_order_flux_correct: true
+      weno5:
+        label: GLM-HLLD WENO5 + VL2
+        fluid: glmmhd
+        riemann: hlld
+        reconstruction: wenoz
+        integrator: vl2
+        convergence_order: 2
+        first_order_flux_correct: true
+      uct2_weno3:
+        label: UCT-HLLD WENO3 + RK2
+        fluid: ucthlldmhd
+        riemann: hlld
+        reconstruction: weno3
+        integrator: rk2
+        convergence_order: 2
+        first_order_flux_correct: false
+      uct4_berta:
+        label: UCT-HLLD Berta4 + RK4
+        fluid: ucthlldmhd
+        riemann: hlld
+        reconstruction: wenoz_point
+        integrator: rk4
+        convergence_order: 4
+        first_order_flux_correct: false
+    mpi_tasks: 64
+    mem_mb_per_cpu: 1200

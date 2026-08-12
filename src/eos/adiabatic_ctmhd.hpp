@@ -8,6 +8,7 @@
 
 // C++ headers
 #include <limits> // std::numeric_limits<float>
+#include <string>
 
 // Parthenon headers
 #include "mesh/mesh.hpp"
@@ -30,6 +31,7 @@ class AdiabaticCTMHDEOS : public EquationOfState {
         gamma_{gamma} {}
 
   void ConservedToPrimitive(MeshData<Real> *md) const override;
+  void PointConservedToPrimitive(MeshData<Real> *md) const;
 
   KOKKOS_INLINE_FUNCTION
   Real GetGamma() const { return gamma_; }
@@ -164,6 +166,9 @@ class AdiabaticCTMHDEOS : public EquationOfState {
   }
 
  private:
+  void ConservedToPrimitiveImpl(MeshData<Real> *md,
+                                const std::string &cons_name) const;
+
   Real gamma_; // ratio of specific heats
 };
 

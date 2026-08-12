@@ -17,6 +17,20 @@ using namespace parthenon::package::prelude;
 namespace Hydro::UCTHLLDMHD {
 
 TaskStatus Assemble_HLLD_Edge_EMF(MeshData<Real> *md);
+TaskStatus Assemble_HLLD_WENO3_Edge_EMF(MeshData<Real> *md);
+TaskStatus Assemble_HLLD_Point_Edge_EMF(MeshData<Real> *md);
+
+TaskStatus CalculateJamesonShockDetector(MeshData<Real> *md);
+TaskStatus CalculateHODShockDetector(MeshData<Real> *md);
+
+
+Real MaxShockIndicatorHst(MeshData<Real> *md);
+Real CountTroubledHst(MeshData<Real> *md);
+
+TaskStatus averageToPoint(MeshData<Real> *md);
+TaskStatus pointToAverage(MeshData<Real> *md);
+TaskStatus CenterPointMagField(MeshData<Real> *md);
+TaskStatus PointConsToPrim(MeshData<Real> *md);
 
 } // namespace Hydro::UCTHLLDMHD
 

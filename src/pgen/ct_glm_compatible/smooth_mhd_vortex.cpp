@@ -12,6 +12,7 @@
 
 // C++ headers
 #include <algorithm> // min, max
+#include <array>
 #include <cmath>     // sqrt()
 #include <cstdio>    // fopen(), fprintf(), freopen()
 #include <iostream>  // endl
@@ -26,6 +27,7 @@
 
 // Athena headers
 #include "../../main.hpp"
+#include "mhd_pgen_utils.hpp"
 #include "outputs/outputs.hpp"
 
 namespace smooth_mhd_vortex {
@@ -35,8 +37,15 @@ namespace smooth_mhd_vortex {
   template <typename ConsHost, typename BfaceHost>
   void Bface_Fill_Cons(MeshBlock *pmb, ConsHost &u, BfaceHost &Bface);
 
+  std::array<Real, IB3 + 1> EvaluatePointConserved(
+      const Real x1, const Real x2, const Real x3, const Real gm1);
+  std::array<Real, 3> EvaluateVectorPotential(
+      const Real x1, const Real x2, const Real x3);
+
 
 Real B0_ = 0.0;
+
+Real VortexAmplitude() { return 1.0 / (2.0 * M_PI); }
 
 // Relative divergence of B error, i.e., L * |div(B)| / |B_0|
 // This is different from the standard package one because it uses
@@ -143,104 +152,73 @@ void UserWorkAfterLoop(Mesh *mesh, ParameterInput *pin, parthenon::SimTime &tm) 
   Real l1_err[NMHD]{}, max_err[NMHD]{};
 
   for (auto &pmb : mesh->block_list) {
-    const auto fluid = pmb->packages.Get("Hydro")->Param<Fluid>("fluid");
+    const auto hydro_pkg = pmb->packages.Get("Hydro");
+    const auto fluid = hydro_pkg->Param<Fluid>("fluid");
+    const bool berta4 =
+        mhd_pgen_utils::UseFourthOrderInitialization(pmb.get());
 
     IndexRange ib = pmb->cellbounds.GetBoundsI(IndexDomain::interior);
     IndexRange jb = pmb->cellbounds.GetBoundsJ(IndexDomain::interior);
     IndexRange kb = pmb->cellbounds.GetBoundsK(IndexDomain::interior);
 
-  Kokkos::View<Real ***, parthenon::LayoutWrapper, parthenon::HostMemSpace> az(
-      "az", pmb->cellbounds.ncellsk(IndexDomain::entire),
-      pmb->cellbounds.ncellsj(IndexDomain::entire),
-      pmb->cellbounds.ncellsi(IndexDomain::entire));
-
-  Real gm1 = pin->GetReal("hydro", "gamma") - 1.0;
-    // Even for MHD, there are only cell-centered mesh variables
-    int ncells4 = NMHD;
+    const Real gm1 = pin->GetReal("hydro", "gamma") - 1.0;
     // Save analytic solution of conserved variables in 4D scratch array on host
     Kokkos::View<Real ****, parthenon::LayoutWrapper, parthenon::HostMemSpace> cons_(
-        "cons scratch", ncells4, pmb->cellbounds.ncellsk(IndexDomain::entire),
+        "cons scratch", NMHD, pmb->cellbounds.ncellsk(IndexDomain::entire),
         pmb->cellbounds.ncellsj(IndexDomain::entire),
         pmb->cellbounds.ncellsi(IndexDomain::entire));
 
-  Real x1size =
-      pmb->pmy_mesh->mesh_size.xmax(X1DIR) - pmb->pmy_mesh->mesh_size.xmin(X1DIR);
-  Real x2size =
-      pmb->pmy_mesh->mesh_size.xmax(X2DIR) - pmb->pmy_mesh->mesh_size.xmin(X2DIR);
+    B0_ = VortexAmplitude();
+    auto &mbd = pmb->meshblock_data.Get();
+    if (berta4) {
+      auto &u_dev_face = mbd->Get("Bface").data;
+      auto Bface_ref = u_dev_face.GetHostMirrorAndCopy();
+      const auto evaluate_point_cons =
+          [gm1](const Real x1, const Real x2, const Real x3) {
+            return EvaluatePointConserved(x1, x2, x3, gm1);
+          };
+      mhd_pgen_utils::InitializeFourthOrderSmoothMHD(
+          pmb.get(), cons_, Bface_ref, evaluate_point_cons,
+          EvaluateVectorPotential);
+    } else {
+      if (fluid == Fluid::ctmhd || fluid == Fluid::ucthlldmhd) {
+        // Construct the legacy second-order CT magnetic reference.
+        auto &u_dev_face = mbd->Get("Bface").data;
+        auto Bface_ref = u_dev_face.GetHostMirrorAndCopy();
+        Bface_Fill_Cons(pmb.get(), cons_, Bface_ref);
+      }
 
-  const bool two_d = pmb->pmy_mesh->ndim < 3;
-  // for 2D sim set x3size to zero so that v_z is 0 below
-  Real x3size =
-      two_d ? 0
-            : pmb->pmy_mesh->mesh_size.xmax(X3DIR) - pmb->pmy_mesh->mesh_size.xmin(X3DIR);
+      auto &coords = pmb->coords;
+      for (int k = kb.s; k <= kb.e; k++) {
+        for (int j = jb.s; j <= jb.e; j++) {
+          for (int i = ib.s; i <= ib.e; i++) {
+            const auto point_cons =
+                EvaluatePointConserved(coords.Xc<1>(i), coords.Xc<2>(j),
+                                       coords.Xc<3>(k), gm1);
+            for (int n = IDN; n <= IEN; ++n) {
+              cons_(n, k, j, i) = point_cons[n];
+            }
 
-
-  // Use vector potential to initialize field loop
-  auto &coords = pmb->coords;
-
-  // initial parameters
-  Real A0_amp = 1.0/(2.0*M_PI);
-  B0_ = A0_amp;
-
-  auto &mbd = pmb->meshblock_data.Get();
-
-  if (fluid == Fluid::ctmhd || fluid == Fluid::ucthlldmhd){
-    // fills u_cons() with the cell-averaged b values from
-    // the face centered values made via the discrete
-    // curl of the vector potential
-    auto &u_dev_face = mbd->Get("Bface").data;
-    auto Bface = u_dev_face.GetHostMirrorAndCopy();
-
-    Bface_Fill_Cons(pmb.get(), cons_, Bface); 
-  }
-
-  Real vx0 = 1.0;
-  Real vy0 = 1.0; 
-  Real p0  = 1.0;
-  // now good to fill up the u vector
-  for (int k = kb.s; k <= kb.e; k++) {
-    for (int j = jb.s; j <= jb.e; j++) { 
-      for (int i = ib.s; i <= ib.e; i++) {
-        // vortex coords
-        Real X = coords.Xc<1>(i);
-        Real Y = coords.Xc<2>(j);
-        Real R2 = SQR(X) + SQR(Y);
-
-        Real g = std::exp(0.5*(1.0-R2));
-
-        // velocity perturbation
-        Real dvx = -(1.0/(2.0*M_PI)) * Y * g;
-        Real dvy =  (1.0/(2.0*M_PI)) * X * g;
-
-        // fill density and mom
-        cons_(IDN, k, j, i) = 1.0;
-        cons_(IM1, k, j, i) = cons_(IDN, k, j, i) * (vx0 + dvx);
-        cons_(IM2, k, j, i) = cons_(IDN, k, j, i) * (vy0 + dvy);
-        cons_(IM3, k, j, i) = 0.0;
-
-        // pressure perturbation
-        Real dp = (((1.0 - R2) - 1.0) / (8.0 * SQR(M_PI))) * std::exp(1.0-R2);
-        Real p = p0 + dp;
-
-      
-        if (fluid == Fluid::glmmhd){
-          cons_(IB1, k, j, i) = -1.0/(2*M_PI) * Y * g;
-          cons_(IB2, k, j, i) =  1.0/(2*M_PI) * X * g;
-          cons_(IB3, k, j, i) = 0.0; 
+            if (fluid == Fluid::glmmhd) {
+              cons_(IB1, k, j, i) = point_cons[IB1];
+              cons_(IB2, k, j, i) = point_cons[IB2];
+              cons_(IB3, k, j, i) = point_cons[IB3];
+            } else {
+              // Preserve the legacy CT reference energy, which is constructed from
+              // its discrete cell-centered magnetic representation.
+              cons_(IEN, k, j, i) =
+                  point_cons[IEN] -
+                  0.5 * (SQR(point_cons[IB1]) + SQR(point_cons[IB2]) +
+                         SQR(point_cons[IB3])) +
+                  0.5 * (SQR(cons_(IB1, k, j, i)) +
+                         SQR(cons_(IB2, k, j, i)) +
+                         SQR(cons_(IB3, k, j, i)));
+            }
+          }
         }
-
-        // will be correct with either ct or glm
-        cons_(IEN, k, j, i) =
-            p / gm1 +
-            0.5 * (SQR(cons_(IB1, k, j, i)) + SQR(cons_(IB2, k, j, i)) + SQR(cons_(IB3, k, j, i))) +
-            0.5 * (SQR(cons_(IM1, k, j, i)) + SQR(cons_(IM2, k, j, i)) + SQR(cons_(IM3, k, j, i))) /
-                cons_(IDN, k, j, i);        
-        
       }
     }
-  }
 
-    
     auto u = mbd->Get("cons").data.GetHostMirrorAndCopy();
     for (int k = kb.s; k <= kb.e; ++k) {
       for (int j = jb.s; j <= jb.e; ++j) {
@@ -378,39 +356,18 @@ void UserWorkAfterLoop(Mesh *mesh, ParameterInput *pin, parthenon::SimTime &tm) 
 
   void ProblemGenerator(MeshBlock *pmb, ParameterInput *pin) {
   
-  const auto fluid = pmb->packages.Get("Hydro")->Param<Fluid>("fluid");
+  const auto hydro_pkg = pmb->packages.Get("Hydro");
+  const auto fluid = hydro_pkg->Param<Fluid>("fluid");
+  const bool berta4 = mhd_pgen_utils::UseFourthOrderInitialization(pmb);
 
   IndexRange ib = pmb->cellbounds.GetBoundsI(IndexDomain::interior);
   IndexRange jb = pmb->cellbounds.GetBoundsJ(IndexDomain::interior);
   IndexRange kb = pmb->cellbounds.GetBoundsK(IndexDomain::interior);
 
-  Kokkos::View<Real ***, parthenon::LayoutWrapper, parthenon::HostMemSpace> az(
-      "az", pmb->cellbounds.ncellsk(IndexDomain::entire),
-      pmb->cellbounds.ncellsj(IndexDomain::entire),
-      pmb->cellbounds.ncellsi(IndexDomain::entire));
-
-  Real gm1 = pin->GetReal("hydro", "gamma") - 1.0;
-
-
-
-  Real x1size =
-      pmb->pmy_mesh->mesh_size.xmax(X1DIR) - pmb->pmy_mesh->mesh_size.xmin(X1DIR);
-  Real x2size =
-      pmb->pmy_mesh->mesh_size.xmax(X2DIR) - pmb->pmy_mesh->mesh_size.xmin(X2DIR);
-
-  const bool two_d = pmb->pmy_mesh->ndim < 3;
-  // for 2D sim set x3size to zero so that v_z is 0 below
-  Real x3size =
-      two_d ? 0
-            : pmb->pmy_mesh->mesh_size.xmax(X3DIR) - pmb->pmy_mesh->mesh_size.xmin(X3DIR);
-
-
-  // Use vector potential to initialize field loop
+  const Real gm1 = pin->GetReal("hydro", "gamma") - 1.0;
   auto &coords = pmb->coords;
 
-  // initial parameters
-  Real A0_amp = 1.0/(2.0*M_PI);
-  B0_ = A0_amp;
+  B0_ = VortexAmplitude();
 
   // Initialize density and momenta
 
@@ -427,55 +384,90 @@ void UserWorkAfterLoop(Mesh *mesh, ParameterInput *pin, parthenon::SimTime &tm) 
     auto &u_dev_face = mbd->Get("Bface").data;
     auto Bface = u_dev_face.GetHostMirrorAndCopy();
 
-    Bface_Fill_Cons(pmb, u, Bface); 
+    if (berta4) {
+      const auto evaluate_point_cons =
+          [gm1](const Real x1, const Real x2, const Real x3) {
+            return EvaluatePointConserved(x1, x2, x3, gm1);
+          };
+      mhd_pgen_utils::InitializeFourthOrderSmoothMHD(
+          pmb, u, Bface, evaluate_point_cons, EvaluateVectorPotential);
+    } else {
+      Bface_Fill_Cons(pmb, u, Bface);
+    }
     u_dev_face.DeepCopy(Bface);
   }
 
-  Real vx0 = 1.0;
-  Real vy0 = 1.0; 
-  Real p0  = 1.0;
-  // now good to fill up the u vector
-  for (int k = kb.s; k <= kb.e; k++) {
-    for (int j = jb.s; j <= jb.e; j++) { 
-      for (int i = ib.s; i <= ib.e; i++) {
-        // vortex coords
-        Real X = coords.Xc<1>(i);
-        Real Y = coords.Xc<2>(j);
-        Real R2 = SQR(X) + SQR(Y);
+  if (!berta4) {
+    for (int k = kb.s; k <= kb.e; k++) {
+      for (int j = jb.s; j <= jb.e; j++) {
+        for (int i = ib.s; i <= ib.e; i++) {
+          const auto point_cons =
+              EvaluatePointConserved(coords.Xc<1>(i), coords.Xc<2>(j),
+                                     coords.Xc<3>(k), gm1);
+          for (int n = IDN; n <= IEN; ++n) {
+            u(n, k, j, i) = point_cons[n];
+          }
 
-        Real g = std::exp(0.5*(1.0-R2));
-
-        // velocity perturbation
-        Real dvx = -(1.0/(2.0*M_PI)) * Y * g;
-        Real dvy =  (1.0/(2.0*M_PI)) * X * g;
-
-        // fill density and mom
-        u(IDN, k, j, i) = 1.0;
-        u(IM1, k, j, i) = u(IDN, k, j, i) * (vx0 + dvx);
-        u(IM2, k, j, i) = u(IDN, k, j, i) * (vy0 + dvy);
-        u(IM3, k, j, i) = 0.0;
-
-        // pressure perturbation
-        Real dp = (((1.0 - R2) - 1.0) / (8.0 * SQR(M_PI))) * std::exp(1.0-R2);
-        Real p = p0 + dp;
-
-        if (fluid == Fluid::glmmhd){
-          u(IB1, k, j, i) = -1.0/(2*M_PI) * Y * g;
-          u(IB2, k, j, i) =  1.0/(2*M_PI) * X * g;
-          u(IB3, k, j, i) = 0.0; 
-          u(IPS, k, j ,i) = 0.0;
+          if (fluid == Fluid::glmmhd) {
+            u(IB1, k, j, i) = point_cons[IB1];
+            u(IB2, k, j, i) = point_cons[IB2];
+            u(IB3, k, j, i) = point_cons[IB3];
+            u(IPS, k, j, i) = 0.0;
+          } else {
+            // Preserve the legacy CT energy based on its discrete centered B.
+            u(IEN, k, j, i) =
+                point_cons[IEN] -
+                0.5 * (SQR(point_cons[IB1]) + SQR(point_cons[IB2]) +
+                       SQR(point_cons[IB3])) +
+                0.5 * (SQR(u(IB1, k, j, i)) + SQR(u(IB2, k, j, i)) +
+                       SQR(u(IB3, k, j, i)));
+          }
         }
-        // now energy calculation uses correct, averaged cell-centered B
-        u(IEN, k, j, i) =
-            p / gm1 +
-            0.5 * (SQR(u(IB1, k, j, i)) + SQR(u(IB2, k, j, i)) + SQR(u(IB3, k, j, i))) +
-            0.5 * (SQR(u(IM1, k, j, i)) + SQR(u(IM2, k, j, i)) + SQR(u(IM3, k, j, i))) /
-                u(IDN, k, j, i);        
-        
       }
     }
   }
   u_dev.DeepCopy(u);
+}
+
+//----------------------------------------------------------------------------------------
+//! \brief Evaluate the complete analytic pointwise smooth-vortex conserved state.
+
+std::array<Real, IB3 + 1> EvaluatePointConserved(
+    const Real x1, const Real x2, const Real /*x3*/, const Real gm1) {
+  const Real amp = VortexAmplitude();
+  const Real r2 = SQR(x1) + SQR(x2);
+  const Real g = std::exp(0.5 * (1.0 - r2));
+
+  std::array<Real, IB3 + 1> u_point{};
+  u_point[IDN] = 1.0;
+  u_point[IM1] = 1.0 - amp * x2 * g;
+  u_point[IM2] = 1.0 + amp * x1 * g;
+  u_point[IM3] = 0.0;
+  u_point[IB1] = -amp * x2 * g;
+  u_point[IB2] = amp * x1 * g;
+  u_point[IB3] = 0.0;
+
+  const Real pressure =
+      1.0 - r2 * std::exp(1.0 - r2) / (8.0 * SQR(M_PI));
+  u_point[IEN] =
+      pressure / gm1 +
+      0.5 * (SQR(u_point[IM1]) + SQR(u_point[IM2]) +
+             SQR(u_point[IM3])) /
+          u_point[IDN] +
+      0.5 * (SQR(u_point[IB1]) + SQR(u_point[IB2]) +
+             SQR(u_point[IB3]));
+
+  return u_point;
+}
+
+//----------------------------------------------------------------------------------------
+//! \brief Evaluate the analytic smooth-vortex vector potential.
+
+std::array<Real, 3> EvaluateVectorPotential(
+    const Real x1, const Real x2, const Real /*x3*/) {
+  const Real r2 = SQR(x1) + SQR(x2);
+  return {0.0, 0.0,
+          VortexAmplitude() * std::exp(0.5 * (1.0 - r2))};
 }
 
 template <typename ConsHost, typename BfaceHost>
@@ -491,11 +483,11 @@ void Bface_Fill_Cons(MeshBlock *pmb, ConsHost &u, BfaceHost &Bface) {
       pmb->cellbounds.ncellsj(IndexDomain::entire),
       pmb->cellbounds.ncellsi(IndexDomain::entire));
 
-  Real A0_amp = 1.0/(2.0*M_PI);
+  const Real A0_amp = VortexAmplitude();
 
   const bool two_d = pmb->pmy_mesh->ndim < 3;
 
-  // Use vector potential to initialize field loop
+  // Use the vector potential to initialize the smooth vortex.
   auto &coords = pmb->coords;
 
   // create corner valued vector potential
@@ -513,7 +505,6 @@ void Bface_Fill_Cons(MeshBlock *pmb, ConsHost &u, BfaceHost &Bface) {
         // define az at the cell-corners or nodes
         Real x_node = coords.X<1, parthenon::TopologicalElement::NN>(k, j, i);
         Real y_node = coords.X<2, parthenon::TopologicalElement::NN>(k, j, i);
-        Real z_node = coords.X<3, parthenon::TopologicalElement::NN>(k, j, i);
         Real R2 = SQR(x_node) + SQR(y_node);
         az(k, j, i) =
             A0_amp * std::exp(0.5*(1-R2));

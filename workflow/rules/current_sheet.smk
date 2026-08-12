@@ -1,5 +1,6 @@
 CURRENT_SHEET = config["tests"]["current_sheet"]
 CURRENT_SHEET_RESOLUTION = CURRENT_SHEET["resolution"]
+CURRENT_SHEET_MB = CURRENT_SHEET["meshblock"]
 CURRENT_SHEET_FLUIDS = CURRENT_SHEET.get("fluids", config["fluids"])
 
 def current_sheet_out(fluid):
@@ -30,13 +31,23 @@ rule run_current_sheet:
         problem_id=lambda wc: f"current_sheet_{wc.fluid}_Nx{CURRENT_SHEET_RESOLUTION[0]}x{CURRENT_SHEET_RESOLUTION[1]}",
         nx1=CURRENT_SHEET_RESOLUTION[0],
         nx2=CURRENT_SHEET_RESOLUTION[1],
+        nx1_mb=CURRENT_SHEET_MB[0],
+        nx2_mb=CURRENT_SHEET_MB[1],
     resources:
-        runtime=30
+        runtime=240,
+        mem_mb=16000
+        #nodes=1,
+        #tasks=16,
+        #mpi="srun",
+        #mem_mb_per_cpu=2000
         #mem_mb=(default for now) mb means megabyte
         #slurm_partition=(default for now)
         # see https://snakemake.github.io/snakemake-plugin-catalog/plugins/executor/slurm.html
         # for more options (number of tasks per job, cpu per task, mem per cpu, etc)
         #hydro/pfloor=1e-15 \
+        #hydro/dfloor=1e-15 \
+        #hydro/ct_energy_correction=true \
+
     shell:
         """
         mkdir -p {params.rundir}
@@ -51,17 +62,21 @@ rule run_current_sheet:
           parthenon/mesh/nx1={params.nx1} \
           parthenon/mesh/nx2={params.nx2} \
           parthenon/mesh/nx3=1 \
-          parthenon/meshblock/nx1={params.nx1} \
-          parthenon/meshblock/nx2={params.nx2} \
+          parthenon/meshblock/nx1={params.nx1_mb} \
+          parthenon/meshblock/nx2={params.nx2_mb} \
           parthenon/meshblock/nx3=1 \
+          parthenon/mesh/nghost=3 \
           parthenon/time/tlim=10.0 \
           parthenon/time/cfl=0.3 \
           parthenon/time/integrator={config[integrator]} \
           hydro/fluid={wildcards.fluid} \
           hydro/riemann={config[riemann]} \
           hydro/reconstruction={config[reconstruction]} \
+          hydro/convergence_order={config[convergence_order]} \
+          hydro/discontinuity_detector={config[discontinuity_detector]} \
+          hydro/discontinuity_detector_threshold={config[discontinuity_detector_threshold]} \
           hydro/gamma=1.666666666666667 \
-          hydro/ct_energy_correction=true \
+          hydro/scratch_level=1 \
           parthenon/output0/file_type=hdf5 \
           parthenon/output0/dt=0.05 \
           parthenon/output0/variables=prim \
@@ -85,7 +100,8 @@ rule make_current_sheet_videos:
         outdir=lambda wc: current_sheet_out(wc.fluid),
         phdf=lambda wc: f"{current_sheet_out(wc.fluid)}/phdf-files",
     resources:
-        runtime=30
+        runtime=30,
+        mem_mb=10000
     shell:
         """
         cd {params.outdir}

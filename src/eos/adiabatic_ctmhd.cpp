@@ -31,10 +31,20 @@ using parthenon::ParArray4D;
 //           int il, int iu, int jl, int ju, int kl, int ku)
 // \brief Converts conserved into primitive variables in adiabatic hydro.
 void AdiabaticCTMHDEOS::ConservedToPrimitive(MeshData<Real> *md) const {
+  ConservedToPrimitiveImpl(md, "cons");
+}
+
+void AdiabaticCTMHDEOS::PointConservedToPrimitive(MeshData<Real> *md) const {
+  ConservedToPrimitiveImpl(md, "cons_point");
+}
+
+void AdiabaticCTMHDEOS::ConservedToPrimitiveImpl(
+    MeshData<Real> *md, const std::string &cons_name) const {
   // before coming into this function, the mag field in cons_pack should
   // be the correct centered version. Then, this function properly 
   // computes the primitive E variable with the correct derived cc B field
-  auto const cons_pack = md->PackVariables(std::vector<std::string>{"cons"});
+  auto const cons_pack =
+      md->PackVariables(std::vector<std::string>{cons_name});
   auto prim_pack = md->PackVariables(std::vector<std::string>{"prim"});
   auto ib = md->GetBlockData(0)->GetBoundsI(IndexDomain::entire);
   auto jb = md->GetBlockData(0)->GetBoundsJ(IndexDomain::entire);

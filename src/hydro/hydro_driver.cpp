@@ -477,13 +477,24 @@ TaskCollection HydroDriver::MakeTaskCollection(BlockList_t &blocks, int stage) {
   // 1.  calc_flux                      (recon + riemann)    
   // 2.  Assemble_Corner_EMF            (make corner EMFs, depends on ct scheme)   
   // 2.5 apply flux corrections         (automatically applies corrections for both cons.flux and bface.flux, aka emf edges)             
-  // 3a. updateWithFluxDivergence       (RK update the flux)   
-  // 3b. updateWithFaceMagDivergence    (RK update magnetic face varibles)
+  // 3a. updateWithFluxDivergence       (RHS flux update for cell-centered vars)   
+  // 3b. updateWithFluxEmfCurl          (RHS flux-EMF update for staggered B field)
   // 4.  boundary updates               (fill ghost cells)
-  // 5.  centerMagField                 (derive the cell-centered magnetic field from face-centered variables)
+  // 5.  PreFillDerived:centerMagField  (derive the cell-centered magnetic field from face-centered variables)
   // 6.  FillDerived cons->prim         (since centerMagField happens before this, energy will be made appropriately)
 
-  
+  // 4th-order Berta24 et al. CT algorithm layout:
+  // Each RK stage will do this:
+  // 1.  averageToPoint                 (take cell-centered and face-centered averages and convert them to point-centered values)
+  // 2.  calc_flux                      (recon + riemann using point values -- thus returns point-face-centered fluxes)    
+  // 3.  Assemble_Edge_EMF              (make edge EMFs - using UCT-HLLD for Berta24 scheme -- returns point-edge-centered EMFs) 
+  // 4.  pointToAverage                 (takes point-face-centered fluxes and point-edge-centered EMFs and returns area-averaged fluxes and line averaged EMFs)  
+  // 5a. updateWithFluxDivergence       (RHS flux update for cell-centered vars)   
+  // 5b. updateWithFluxEmfCurl          (RHS flux-EMF update for staggered B field)
+  // 6.  boundary updates               (fill ghost cells)
+  // 7.  PreFillDerived:centerMagField  (derive the cell-centered magnetic field from face-centered variables)
+  // 8.  FillDerived cons->prim         (since centerMagField happens before this, energy will be made appropriately)
+
 
   // Now start the main time integration by resetting the registers
   TaskRegion &async_region_init_int = tc.AddRegion(num_task_lists_executed_independently);
@@ -524,38 +535,157 @@ TaskCollection HydroDriver::MakeTaskCollection(BlockList_t &blocks, int stage) {
     auto &mu1 = pmesh->mesh_data.GetOrAdd("u1", i);
 
     const auto any = parthenon::BoundaryType::any;
-    auto start_bnd = tl.AddTask(none, parthenon::StartReceiveBoundBufs<any>, mu0);
-    auto start_flxcor_recv =
-        tl.AddTask(none, parthenon::StartReceiveFluxCorrections, mu0);
 
     const auto flux_str = (stage == 1) ? "flux_first_stage" : "flux_other_stage";
     FluxFun_t *calc_flux_fun = hydro_pkg->Param<FluxFun_t *>(flux_str);
-    // -------------- CT step 1 (recon + riemann) --------------
-    auto calc_flux = tl.AddTask(none, calc_flux_fun, mu0);
 
+    // -------------- 4th order Berta24 discontinuity detector --------------
     const auto fluid = hydro_pkg->Param<Fluid>("fluid");
-    // -------------- CT step 2 (use fluxes to make corner EMFs) --------------
+    const auto convergence_order = hydro_pkg->Param<int>("convergence_order");
+    const auto reconstruction = hydro_pkg->Param<Reconstruction>("reconstruction");
+    const auto &dd = hydro_pkg->Param<std::string>("hydro/discontinuity_detector");
+
+
+    const bool berta4 =
+        fluid == Fluid::ucthlldmhd && convergence_order == 4;
+
+    const bool jameson =
+        berta4 && dd == "jameson";
+
+    const bool hod =
+        berta4 && dd == "hod";
+
+    const bool use_order_reduction = (berta4 && dd != "none");
+
+    TaskID dd_bounds = none;
+    if (use_order_reduction){
+      auto &dd_md = pmesh->mesh_data.AddShallow(
+          "berta24_discontinuity_detector", mu0,
+          std::vector<std::string>{"berta24_troubled"});
+
+      auto start_dd_bnd =
+          tl.AddTask(none, parthenon::StartReceiveBoundBufs<any>, dd_md);
+
+      TaskID calc_dd = none;
+      if (jameson) {
+        calc_dd = 
+            tl.AddTask(none, Hydro::UCTHLLDMHD::CalculateJamesonShockDetector, mu0.get());
+      } else if (hod) {
+        calc_dd = 
+            tl.AddTask(none, Hydro::UCTHLLDMHD::CalculateHODShockDetector, mu0.get());
+      }
+
+      dd_bounds = parthenon::AddBoundaryExchangeTasks(
+          calc_dd | start_dd_bnd, tl, dd_md, pmesh->multilevel);      
+    }
+    // -------------- end 4th order Berta24 discontinuity detector --------------
+
+
+
+    // -------------- 4th order Berta24 step 1 (average -> point value) --------------
+    TaskID calc_flux_dep = dd_bounds;
+    TaskID start_bnd = dd_bounds;
+
+    auto start_flxcor_recv =
+        tl.AddTask(dd_bounds, parthenon::StartReceiveFluxCorrections, mu0);
+
+    if (berta4) {
+      // Use a shallow point-state-only container for this exchange. The fields
+      // share storage with mu0, but the restricted container has its own
+      // boundary buffers and prevents the evolved cons/Bface state from being
+      // communicated during this intermediate fourth-order operation.
+      auto &point_md = pmesh->mesh_data.AddShallow(
+          "berta24_point_state", mu0,
+          std::vector<std::string>{"cons_point", "Bface_point"});
+
+      // Post receives for the point-state exchange.
+      auto start_point_bnd =
+          tl.AddTask(dd_bounds, parthenon::StartReceiveBoundBufs<any>, point_md);
+
+      // Eq. 16 and Eq. 21
+      auto average_to_point =
+          tl.AddTask(dd_bounds, Hydro::UCTHLLDMHD::averageToPoint, mu0.get());
+
+      // Eq. 22: fill the magnetic components of interior cons_point.
+      auto center_point_b =
+          tl.AddTask(average_to_point,
+                    Hydro::UCTHLLDMHD::CenterPointMagField,
+                    mu0.get());
+
+      // Communicate complete cons_point/Bface_point interior values and
+      // apply boundary conditions.
+      auto point_bounds = parthenon::AddBoundaryExchangeTasks(
+          center_point_b | start_point_bnd, tl, point_md, pmesh->multilevel);
+
+      // Convert cons_point into prim over the entire domain, including the
+      // point-state ghosts filled above.
+      calc_flux_dep =
+          tl.AddTask(point_bounds,
+                    Hydro::UCTHLLDMHD::PointConsToPrim,
+                    mu0.get());
+
+      // The point exchange is finished, so it is now safe to post receives
+      // for the later post-update averaged-state exchange.
+      start_bnd =
+          tl.AddTask(point_bounds,
+                    parthenon::StartReceiveBoundBufs<any>,
+                    mu0);
+    } else {
+      // Existing second-order behavior.
+      start_bnd = tl.AddTask(none, parthenon::StartReceiveBoundBufs<any>, mu0);
+    }
+
+    // -------------- 4th order Berta24 step 2 (recon + riemann) --------------
+    auto calc_flux = tl.AddTask(calc_flux_dep, calc_flux_fun, mu0);
+
+  
+    // -------------- 4th order Berta24 step 3 (use fluxes or Riemann solve info to make corner EMFs) --------------
     TaskID ct_emf = calc_flux;
-    if (fluid == Fluid::ctmhd) {
-      ct_emf = tl.AddTask(calc_flux, Hydro::CTMHD::Assemble_Corner_EMF, mu0.get());
+    if (fluid == Fluid::ctmhd){
+      ct_emf = tl.AddTask(
+          calc_flux,
+          Hydro::CTMHD::Assemble_Corner_EMF,
+          mu0.get());
+    } else if (fluid == Fluid::ucthlldmhd){
+      if (berta4) {
+        ct_emf = tl.AddTask(
+            calc_flux,
+            Hydro::UCTHLLDMHD::Assemble_HLLD_Point_Edge_EMF,
+            mu0.get());
+      } else if (reconstruction == Reconstruction::weno3) {
+        ct_emf = tl.AddTask(
+            calc_flux,
+            Hydro::UCTHLLDMHD::Assemble_HLLD_WENO3_Edge_EMF,
+            mu0.get());
+      } else {
+        ct_emf = tl.AddTask(
+            calc_flux,
+            Hydro::UCTHLLDMHD::Assemble_HLLD_Edge_EMF,
+            mu0.get());
+      }
     }
-    if (fluid == Fluid::ucthlldmhd){
-      ct_emf = tl.AddTask(calc_flux, Hydro::UCTHLLDMHD::Assemble_HLLD_Edge_EMF, mu0.get());
+
+    // -------------- 4th order Berta24 step 4 (point value -> average) --------------
+    TaskID calc_pointToAve = ct_emf;
+    if (berta4){
+      calc_pointToAve = tl.AddTask(ct_emf, Hydro::UCTHLLDMHD::pointToAverage, mu0.get()); 
     }
+
+
     // TODO(pgrete) figure out what to do about the sources from the first stage
     // that are potentially disregarded when the (m)hd fluxes are corrected in the second
     // stage.
-    TaskID first_order_flux_correct = ct_emf;
+    TaskID first_order_flux_correct = calc_pointToAve;
     if (hydro_pkg->Param<bool>("first_order_flux_correct")) {
       auto *first_order_flux_correct_fun =
           hydro_pkg->Param<FirstOrderFluxCorrectFun_t *>("first_order_flux_correct_fun");
       first_order_flux_correct =
-          tl.AddTask(ct_emf, first_order_flux_correct_fun, mu0.get(), mu1.get(),
+          tl.AddTask(calc_pointToAve, first_order_flux_correct_fun, mu0.get(), mu1.get(),
                      integrator->gam0[stage - 1], integrator->gam1[stage - 1],
                      integrator->beta[stage - 1] * integrator->dt);
     }
 
-    // -------------- CT step 2.5 (apply refinement flux corrections) --------------
+    // -------------- CT step 2.5 (apply refinement flux corrections) -- not available at 4th order --------------
     auto send_flx =
         tl.AddTask(first_order_flux_correct, parthenon::LoadAndSendFluxCorrections, mu0);
     auto recv_flx = tl.AddTask(start_flxcor_recv, parthenon::ReceiveFluxCorrections, mu0);
@@ -563,16 +693,16 @@ TaskCollection HydroDriver::MakeTaskCollection(BlockList_t &blocks, int stage) {
                               parthenon::SetFluxCorrections, mu0);
 
     // compute the divergence of fluxes of conserved variables
-    // -------------- CT Step 3a. (RK update the flux) --------------
+    // -------------- CT Step 5a. (RHS flux update for cell-centered vars)    --------------
     auto update_flx = tl.AddTask(
         set_flx, parthenon::Update::UpdateWithFluxDivergence<MeshData<Real>>, mu0.get(),
         mu1.get(), integrator->gam0[stage - 1], integrator->gam1[stage - 1],
         integrator->beta[stage - 1] * integrator->dt);
-    // -------------- CT step 3b. (RK update magnetic face varibles) --------------
+    // -------------- CT step 5b. (RHS flux-EMF update for staggered B field)  --------------
     TaskID update_face = update_flx;
     if (fluid == Fluid::ctmhd || fluid == Fluid::ucthlldmhd) {
       update_face = tl.AddTask(
-          update_flx, Hydro::CTMHD::UpdateWithFaceMagDivergence, mu0.get(),
+          update_flx, Hydro::CTMHD::UpdateWithFluxEmfCurl, mu0.get(),
           mu1.get(), integrator->gam0[stage - 1], integrator->gam1[stage - 1],
           integrator->beta[stage - 1] * integrator->dt);
     }
@@ -608,18 +738,6 @@ TaskCollection HydroDriver::MakeTaskCollection(BlockList_t &blocks, int stage) {
     parthenon::AddBoundaryExchangeTasks(source_split_first_order | start_bnd, tl, mu0,
                                         pmesh->multilevel);
   }
-
-   // -------------- CT step 5 (realign q with face mag fields) --------------
-  // TaskRegion &ct_realignment_region = tc.AddRegion(num_partitions);
-  // for (int i = 0; i < num_partitions; i++) {
-  //   const auto fluid = hydro_pkg->Param<Fluid>("fluid");
-  //   auto &tl = ct_realignment_region[i];
-  //   auto &mu0 = pmesh->mesh_data.GetOrAdd("base", i);
-  //   if (fluid == Fluid::ctmhd) {
-  //     auto centerMagField =
-  //         tl.AddTask(none, Hydro::CTMHD::center_Mag_Field, mu0.get());
-  //   }
-  // }
 
   TaskRegion &single_tasklist_per_pack_region_3 = tc.AddRegion(num_partitions);
   for (int i = 0; i < num_partitions; i++) {

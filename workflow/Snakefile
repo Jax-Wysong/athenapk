@@ -3,6 +3,7 @@ report: config.get("report_description", "report/workflow.rst")
 
 include: "rules/smooth_vortex.smk"
 include: "rules/linear_wave.smk"
+include: "rules/linear_wave_directions.smk"
 include: "rules/linear_wave_static.smk"
 include: "rules/field_loop.smk"
 include: "rules/field_loop_orientations.smk"
@@ -12,6 +13,9 @@ include: "rules/orszag_tang.smk"
 include: "rules/orszag_tang_refined.smk"
 include: "rules/orszag_tang_static.smk"
 include: "rules/current_sheet.smk"
+include: "rules/mhd_cloud_shock.smk"
+include: "rules/mhd_blast.smk"
+include: "rules/turbulence.smk"
 include: "rules/cpaw.smk"
 include: "rules/cpaw_static.smk"
 include: "rules/cpaw_viz.smk"
@@ -24,6 +28,7 @@ rule all:
     input:
         smooth_vortex_targets,
         linear_wave_targets,
+        linear_wave_direction_targets,
         linear_wave_static_targets,
         field_loop_targets,
         field_loop_orientation_targets,
@@ -33,6 +38,9 @@ rule all:
         orszag_tang_refined_targets,
         orszag_tang_static_targets,
         current_sheet_targets,
+        mhd_cloud_shock_targets,
+        mhd_blast_targets,
+        turbulence_targets,
         cpaw_targets,
         cpaw_static_targets,
         cpaw_viz_targets

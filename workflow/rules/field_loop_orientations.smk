@@ -86,6 +86,7 @@ rule run_field_loop_orientation:
           parthenon/mesh/nx1={params.nx1} \
           parthenon/mesh/nx2={params.nx2} \
           parthenon/mesh/nx3={params.nx3} \
+          parthenon/mesh/nghost=3 \
           parthenon/meshblock/nx1={params.mb_nx1} \
           parthenon/meshblock/nx2={params.mb_nx2} \
           parthenon/meshblock/nx3={params.mb_nx3} \
@@ -95,6 +96,7 @@ rule run_field_loop_orientation:
           hydro/fluid={wildcards.fluid} \
           hydro/riemann={config[riemann]} \
           hydro/reconstruction={config[reconstruction]} \
+          hydro/convergence_order={config[convergence_order]} \
           hydro/gamma=1.666666666666667 \
           parthenon/output0/file_type=hdf5 \
           parthenon/output0/dt=0.02 \

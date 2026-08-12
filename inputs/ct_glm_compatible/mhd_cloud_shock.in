@@ -1,0 +1,69 @@
+# AthenaPK - a performance portable block structured AMR MHD code
+# Copyright (c) 2023, Athena Parthenon Collaboration. All rights reserved.
+# Licensed under the BSD 3-Clause License (the "LICENSE");
+
+<comment>
+problem = 3D MHD cloud-shock interaction from Berta et al. (2024)
+
+<parthenon/job>
+problem_id = mhd_cloud_shock
+
+<job>
+problem_id = mhd_cloud_shock
+
+<parthenon/mesh>
+refinement = none
+nghost = 3
+
+nx1 = 128
+x1min = 0.0
+x1max = 1.0
+ix1_bc = cloud_shock_inflow
+ox1_bc = outflow
+
+nx2 = 128
+x2min = 0.0
+x2max = 1.0
+ix2_bc = outflow
+ox2_bc = outflow
+
+nx3 = 128
+x3min = 0.0
+x3max = 1.0
+ix3_bc = outflow
+ox3_bc = outflow
+
+<parthenon/meshblock>
+nx1 = 32
+nx2 = 32
+nx3 = 32
+
+<parthenon/time>
+integrator = rk4
+cfl = 0.3
+tlim = 0.06
+nlim = -1
+perf_cycle_offset = 2
+
+<hydro>
+fluid = ucthlldmhd
+eos = adiabatic
+riemann = hlld
+reconstruction = wenoz_point
+convergence_order = 4
+discontinuity_detector = hod
+discontinuity_detector_threshold = 0.5
+discontinuity_detector_epsilon = 1.0e-12
+gamma = 1.666666666666667
+scratch_level = 1
+
+<parthenon/output0>
+file_type = hdf5
+dt = 0.002
+variables = prim,berta24_troubled
+include_in_final = true
+use_final_label = true
+
+<parthenon/output1>
+file_type = hst
+dt = 0.002

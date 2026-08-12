@@ -4,6 +4,10 @@ workflow/logs/
 __pycache__/
 *.py[cod]
 
+# Berta specific ignore
+*.pdf
+
+
 # Emacs autosave files
 \#*\#
 

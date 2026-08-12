@@ -80,6 +80,8 @@ int main(int argc, char *argv[]) {
     pman.app_input->InitUserMeshData = blast::InitUserMeshData;
     pman.app_input->ProblemGenerator = blast::ProblemGenerator;
     pman.app_input->UserWorkAfterLoop = blast::UserWorkAfterLoop;
+  } else if (problem == "mhd_blast") {
+    pman.app_input->ProblemGenerator = mhd_blast::ProblemGenerator;
   } else if (problem == "advection") {
     pman.app_input->InitUserMeshData = advection::InitUserMeshData;
     pman.app_input->ProblemGenerator = advection::ProblemGenerator;
@@ -93,7 +95,12 @@ int main(int argc, char *argv[]) {
   } else if (problem == "field_loop") {
     pman.app_input->ProblemGenerator = field_loop::ProblemGenerator;
     Hydro::ProblemInitPackageData = field_loop::ProblemInitPackageData;
-  } else if (problem == "kh") {
+  } else if (problem == "mhd_cloud_shock") {
+    pman.app_input->ProblemGenerator = mhd_cloudShock::ProblemGenerator;
+    pman.app_input->RegisterBoundaryCondition(
+        parthenon::BoundaryFace::inner_x1, "cloud_shock_inflow",
+        mhd_cloudShock::FixedInnerX1);
+  }else if (problem == "kh") {
     pman.app_input->MeshProblemGenerator = kh::ProblemGenerator;
   } else if (problem == "lw_implode") {
     pman.app_input->ProblemGenerator = lw_implode::ProblemGenerator;

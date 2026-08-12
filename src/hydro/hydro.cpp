@@ -25,6 +25,7 @@
 #include "../recon/ppm_simple.hpp"
 #include "../recon/weno3_simple.hpp"
 #include "../recon/wenoz_simple.hpp"
+#include "../recon/wenoz_point.hpp"
 #include "../refinement/refinement.hpp"
 #include "../tracers/tracers.hpp"
 #include "../units.hpp"
@@ -401,6 +402,13 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
   }
   pkg->AddParam<>("ct_energy_correction", ct_energy_correction);
 
+  int convergence_order = 2;
+  if (fluid == Fluid::ucthlldmhd) {
+    convergence_order =
+        pin->GetOrAddInteger("hydro", "convergence_order", 2);
+  }
+  pkg->AddParam<>("convergence_order", convergence_order);
+
   // Following params should (currently) be present independent of solver because
   // they're all used in the main loop.
   pkg->AddParam<>("calc_c_h", calc_c_h);
@@ -436,7 +444,10 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
   } else if (recon_str == "wenoz") {
     recon = Reconstruction::wenoz;
     recon_need_nghost = 3;
-  } else {
+  } else if (recon_str == "wenoz_point") {
+    recon = Reconstruction::wenoz_point;
+    recon_need_nghost = 3;
+  }else {
     PARTHENON_FAIL("AthenaPK hydro: Unknown reconstruction method.");
   }
   // Adding recon independently of flux function pointer as it's used in 3D flux func.
@@ -476,10 +487,21 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
         "with HLLD Riemann solves ");
   }
   if (fluid == Fluid::ucthlldmhd &&
-      (recon != Reconstruction::plm || riemann != RiemannSolver::hlld)) {
+      ((recon != Reconstruction::plm && recon != Reconstruction::weno3 &&
+        recon != Reconstruction::wenoz_point) ||
+       riemann != RiemannSolver::hlld)) {
     PARTHENON_FAIL(
-        "AthenaPK hydro: ucthlldmhd currently only supports PLM reconstruction "
+        "AthenaPK hydro: ucthlldmhd currently only supports PLM, WENO3, or "
+        "WENOZ_point reconstruction "
         "and requires HLLD Riemann solves ");
+  }
+  if (fluid == Fluid::ucthlldmhd) {
+    PARTHENON_REQUIRE(
+        (convergence_order == 2 &&
+         (recon == Reconstruction::plm || recon == Reconstruction::weno3)) ||
+            (convergence_order == 4 && recon == Reconstruction::wenoz_point),
+        "AthenaPK hydro: ucthlldmhd requires convergence_order=2 with PLM/WENO3 "
+        "or convergence_order=4 with WENOZ_point reconstruction.")
   }
 
   // Set calculation of hyperbolic timestep. Input file option takes precedence.
@@ -526,8 +548,11 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
   add_flux_fun<Fluid::glmmhd, Reconstruction::wenoz, RiemannSolver::hlld>(flux_functions);
   // (jwysong) only adding 1 ctmhd option for now
   add_flux_fun<Fluid::ctmhd, Reconstruction::plm, RiemannSolver::hlld>(flux_functions);
-  // (jwysong) only adding 1 ucthlldmhd option for now
+  // (jwysong) 2nd order mhd option
   add_flux_fun<Fluid::ucthlldmhd, Reconstruction::plm, RiemannSolver::hlld>(flux_functions);
+  add_flux_fun<Fluid::ucthlldmhd, Reconstruction::weno3, RiemannSolver::hlld>(flux_functions);
+  // (jwysong) 4th order Berta et al. mhd option
+  add_flux_fun<Fluid::ucthlldmhd, Reconstruction::wenoz_point, RiemannSolver::hlld>(flux_functions);
 
   // Add first order recon with LLF fluxes (implemented for testing as tight loop)
   flux_functions[std::make_tuple(Fluid::euler, Reconstruction::dc, RiemannSolver::llf)] =
@@ -582,6 +607,8 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
     integrator = Integrator::rk2;
   } else if (integrator_str == "rk3") {
     integrator = Integrator::rk3;
+  } else if (integrator_str == "rk4") {
+    integrator = Integrator::rk4;
   } else if (integrator_str == "vl2") {
     integrator = Integrator::vl2;
     // override first stage (predictor) to first order
@@ -595,8 +622,8 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
   auto first_order_flux_correct =
       pin->GetOrAddBoolean("hydro", "first_order_flux_correct", false);
   PARTHENON_REQUIRE(
-      !((fluid == Fluid::ctmhd || fluid == Fluid::ucthlldmhd) && first_order_flux_correct),
-      "AthenaPK hydro: first_order_flux_correct is not currently supported with ctmhd or ucthlldmhd.");
+      !((fluid == Fluid::ctmhd || fluid == Fluid::ucthlldmhd || integrator == Integrator::rk4) && first_order_flux_correct),
+      "AthenaPK hydro: first_order_flux_correct is not currently supported with ctmhd or ucthlldmhd or rk4 time stepping.");
   pkg->AddParam<>("first_order_flux_correct", first_order_flux_correct);
   if (first_order_flux_correct) {
     if (fluid == Fluid::euler) {
@@ -978,7 +1005,111 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
     pkg->AddField("uct_hlld", uct_m);
   }
 
+  /*---------------------------------------------------------------------------
+   For Berta24's 4th order scheme, we need to keep track of
+  volume/area-averaged quantities, which are ultimately what's being evolved,
+  and point-valued quantities which will be used for intermediate steps
+  ---------------------------------------------------------------------------*/
+  if (fluid == Fluid::ucthlldmhd && convergence_order == 4){
+    // gives us 3 face vectors which we will use for the Bface point values
+    //             Bx-face                By-face                 Bz-face
+    // Bface_point(TE::F1, 0), Bface_point(TE::F2, 0), Bface_point(TE::F3, 0)
+    // and fluxes which we fill with the point-valued edge EMFs
+    Metadata bfpoint_m(
+                      {Metadata::Face, Metadata::Derived, Metadata::OneCopy,
+                       Metadata::WithFluxes, Metadata::FillGhost}
+    );
+    pkg->AddField("Bface_point", bfpoint_m);
+
+    /*---------------------------------------------------------------------------
+    this is where we will keep our cell-centered point-valued conservative
+    variables, which are important for 4th order intermediate calculations.
+    Unfortunately, we can't use Metadata::WithFluxes bc then, 
+    during the UpdateWithFluxDivergence call in hydro_driver, Parthenon 
+    will pack it and force it to update 
+    -- see parthenon/src/interface/update.cpp : line 129
+    ---------------------------------------------------------------------------*/
+    Metadata cpoint_m(
+        {Metadata::Cell, Metadata::Derived, Metadata::OneCopy,
+         Metadata::FillGhost},
+        std::vector<int>({nhydro + nscalars}), cons_labels);
+    pkg->AddField("cons_point", cpoint_m);
+
+    // so we will make separate storage for consflux_point,
+    // accessed like so:
+    // consflux_point(TE::F1, n, k, j, i)
+    // consflux_point(TE::F2, n, k, j, i)
+    // consflux_point(TE::F3, n, k, j, i)
+    Metadata cfpoint_m(
+        {Metadata::Face, Metadata::Derived, Metadata::OneCopy},
+        std::vector<int>({nhydro + nscalars}), cons_labels);
+    pkg->AddField("consflux_point", cfpoint_m);
+
+  }
+
+  const auto dd = pin->GetOrAddString("hydro", "discontinuity_detector", "none");
+  pkg->AddParam<std::string>("hydro/discontinuity_detector", dd);
+  const bool dd_threshold_was_set =
+      pin->DoesParameterExist("hydro", "discontinuity_detector_threshold");
+  const auto dd_threshold = pin->GetOrAddReal("hydro", "discontinuity_detector_threshold", 1.0e50);
+  pkg->AddParam<Real>("hydro/discontinuity_detector_threshold", dd_threshold);
+  const auto dd_eps = pin->GetOrAddReal("hydro", "discontinuity_detector_epsilon", 1.0e-12);
+  pkg->AddParam<Real>("hydro/discontinuity_detector_epsilon", dd_eps);
+  const auto dd_fallback = pin->GetOrAddString("hydro", "discontinuity_detector_fallback", "plm");
+  pkg->AddParam<std::string>("hydro/discontinuity_detector_fallback", dd_fallback);
+
+  PARTHENON_REQUIRE(
+      dd == "none" || dd == "jameson" || dd == "hod",
+      "AthenaPK hydro: discontinuity_detector must be 'none' 'jameson' or 'hod'.");
+  PARTHENON_REQUIRE(
+      dd_fallback == "plm",
+      "AthenaPK hydro: discontinuity_detector_fallback currently only supports 'plm'.");
+  PARTHENON_REQUIRE(
+      dd == "none" || dd_eps > 0.0,
+      "AthenaPK hydro: discontinuity_detector_epsilon must be positive when "
+      "a discontinuity detector is enabled.");
+
+  if (dd == "jameson" || dd == "hod") {
+    PARTHENON_REQUIRE(
+        dd_threshold_was_set,
+        "AthenaPK hydro: discontinuity_detector_threshold must be explicitly set "
+        "when using a discontinuity detector.");
+    PARTHENON_REQUIRE(
+        fluid == Fluid::ucthlldmhd && convergence_order == 4 &&
+            recon == Reconstruction::wenoz_point && dd_threshold > 0.0,
+        "AthenaPK hydro: the discontinuity detector requires "
+        "ucthlldmhd, convergence_order=4, reconstruction=wenoz_point, and a "
+        "positive discontinuity_detector_threshold.");
+  }
+
+  if (fluid == Fluid::ucthlldmhd){
+    // this will hold eta_c at cell-centers
+    // it may be nice to visualize 
+    Metadata berta24_shock_indicator({Metadata::Cell, Metadata::Derived, Metadata::OneCopy});
+    pkg->AddField("berta24_shock_indicator", berta24_shock_indicator);
+
+    // this will hold the '0.0' and '1.0' for if a cell is bad or not
+    // fillghost is on so that meshblocks make the same decisions across shared egdes or faces
+    Metadata berta24_troubled({Metadata::Cell, Metadata::Derived, Metadata::OneCopy, Metadata::FillGhost});
+    pkg->AddField("berta24_troubled", berta24_troubled);
+  }
+
+  if (dd != "none") {
+    auto hst_vars = pkg->Param<parthenon::HstVar_list>(parthenon::hist_param_key);
+    hst_vars.emplace_back(HistoryOutputVar(
+        parthenon::UserHistoryOperation::max,
+        Hydro::UCTHLLDMHD::MaxShockIndicatorHst, "maxShockIndicator"));
+    hst_vars.emplace_back(HistoryOutputVar(
+        parthenon::UserHistoryOperation::sum,
+        Hydro::UCTHLLDMHD::CountTroubledHst, "numTroubled"));
+    pkg->UpdateParam(parthenon::hist_param_key, hst_vars);
+  }
+
   const auto refine_str = pin->GetOrAddString("refinement", "type", "unset");
+  const auto refinement_parthenon_str = pin->GetOrAddString("parthenon/mesh", "refinement", "none");
+  if (convergence_order == 4 && refinement_parthenon_str != "none"){
+    PARTHENON_FAIL("Cannot do 4th order refinement!");
+  }
   if (refine_str == "pressure_gradient") {
     pkg->CheckRefinementBlock = refinement::gradient::PressureGradient;
     const auto thr = pin->GetOrAddReal("refinement", "threshold_pressure_gradient", 0.0);
@@ -1258,34 +1389,66 @@ TaskStatus CalculateFluxesTight(std::shared_ptr<MeshData<Real>> &md) {
 // Calculate fluxes using scratch pad memory, i.e., over cached pencils in i-dir.
 template <Fluid fluid, Reconstruction recon, RiemannSolver rsolver>
 TaskStatus CalculateFluxes(std::shared_ptr<MeshData<Real>> &md) {
+  constexpr bool is_berta4 =
+      fluid == Fluid::ucthlldmhd && recon == Reconstruction::wenoz_point;
+  constexpr bool uses_average_bface =
+      fluid == Fluid::ctmhd || (fluid == Fluid::ucthlldmhd && !is_berta4);
+  
   auto pmb = md->GetBlockData(0)->GetBlockPointer();
+  
+  const auto &detector =
+      pmb->packages.Get("Hydro")
+          ->Param<std::string>("hydro/discontinuity_detector");
+
+  const bool use_order_reduction = detector != "none";
+
   IndexRange ib = pmb->cellbounds.GetBoundsI(IndexDomain::interior);
   IndexRange jb = pmb->cellbounds.GetBoundsJ(IndexDomain::interior);
   IndexRange kb = pmb->cellbounds.GetBoundsK(IndexDomain::interior);
   int il, iu, jl, ju, kl, ku;
   jl = jb.s, ju = jb.e, kl = kb.s, ku = kb.e;
   // TODO(pgrete): are these looop limits are likely too large for 2nd order
+  // hydro/glm/ct defaults
   if (pmb->block_size.nx(X2DIR) > 1) {
     if (pmb->block_size.nx(X3DIR) == 1) // 2D
       jl = jb.s - 1, ju = jb.e + 1, kl = kb.s, ku = kb.e;
     else // 3D
       jl = jb.s - 1, ju = jb.e + 1, kl = kb.s - 1, ku = kb.e + 1;
   }
-
-  if (fluid == Fluid::ucthlldmhd){
-    if (pmb->block_size.nx(X2DIR) > 1) {
-      if (pmb->block_size.nx(X3DIR) == 1) // 2D
+  
+  if (pmb->block_size.nx(X2DIR) > 1) {
+    if (pmb->block_size.nx(X3DIR) == 1){ // 2D
+      if constexpr (is_berta4){
+        jl = jb.s - 3, ju = jb.e + 3, kl = kb.s, ku = kb.e;
+      } else if constexpr (fluid == Fluid::ucthlldmhd && !is_berta4){
         jl = jb.s - 2, ju = jb.e + 2, kl = kb.s, ku = kb.e;
-      else // 3D
-        jl = jb.s - 2, ju = jb.e + 2, kl = kb.s - 2, ku = kb.e + 2;
+      } else if constexpr (fluid == Fluid::ctmhd){
+        jl = jb.s - 1, ju = jb.e + 1, kl = kb.s, ku = kb.e;
+      }
+    }
+    else{ // 3D
+      if constexpr (is_berta4){
+        jl = jb.s - 3, ju = jb.e + 3, kl = kb.s - 3, ku = kb.e + 3;
+      } else if constexpr (fluid == Fluid::ucthlldmhd && !is_berta4){
+        jl = jb.s - 2, ju = jb.e + 2, kl = kb.s -2, ku = kb.e + 2;
+      } else if constexpr (fluid == Fluid::ctmhd){
+        jl = jb.s - 1, ju = jb.e + 1, kl = kb.s - 1, ku = kb.e + 1;
+      }
     }
   }
+
 
   std::vector<parthenon::MetadataFlag> flags_ind({Metadata::Independent, Metadata::Cell});
   auto cons_in = md->PackVariablesAndFluxes(flags_ind);
   MeshBlockPack<VariablePack<Real>> Bface_pack;
+  MeshBlockPack<VariablePack<Real>> Bface_point_pack;
   MeshBlockPack<VariablePack<Real>> uct_hlld_pack;
-  if constexpr (fluid == Fluid::ctmhd || fluid == Fluid::ucthlldmhd) {
+  MeshBlockPack<VariablePack<Real>> troubled_pack;
+
+  MeshBlockPack<VariablePack<Real>> consflux_point_pack;
+
+  auto pkg = pmb->packages.Get("Hydro");
+  if constexpr (uses_average_bface) {
     Bface_pack =
         md->PackVariables(std::vector<std::string>{"Bface"});
   }
@@ -1294,8 +1457,18 @@ TaskStatus CalculateFluxes(std::shared_ptr<MeshData<Real>> &md) {
     uct_hlld_pack =
               md->PackVariables(std::vector<std::string>{"uct_hlld"});
   }
+  if constexpr (is_berta4) {
+    Bface_point_pack =
+        md->PackVariables(std::vector<std::string>{"Bface_point"});
+    consflux_point_pack =
+      md->PackVariables(std::vector<std::string>{"consflux_point"});
+    troubled_pack =
+      md->PackVariables(std::vector<std::string>{"berta24_troubled"});
+    Bface_pack =
+        md->PackVariables(std::vector<std::string>{"Bface"});
+  }
 
-  auto pkg = pmb->packages.Get("Hydro");
+
   const auto nhydro = pkg->Param<int>("nhydro");
   const auto nscalars = pkg->Param<int>("nscalars");
 
@@ -1334,19 +1507,75 @@ TaskStatus CalculateFluxes(std::shared_ptr<MeshData<Real>> &md) {
         Reconstruct<recon, X1DIR>(member, k, j, ib.s - 1, ib.e + 1, prim, wl, wr);
         // Sync all threads in the team so that scratch memory is consistent
         member.team_barrier();
-        if constexpr (fluid == Fluid::ctmhd || fluid == Fluid::ucthlldmhd) {
+        if constexpr (uses_average_bface) {
           const auto &Bface = Bface_pack(b);
-          // force the evolved Bface vars to sit on both sides of the reconstructed face
+          // force the evolved staggered Bface vars to sit on 
+          // both sides of the reconstructed face
           parthenon::par_for_inner(member, ib.s, ib.e + 1, [&](const int i) {
             wl(IB1, i) = Bface(TE::F1, 0, k, j, i);
             wr(IB1, i) = Bface(TE::F1, 0, k, j, i);
+          });
+          member.team_barrier();
+        } else if constexpr (is_berta4) {
+          const auto &Bface_point = Bface_point_pack(b);
+          const auto &troubled = troubled_pack(b);
+          const auto &Bface = Bface_pack(b);
+
+          // Replace WENOZ states with PLM states at troubled faces.
+          for (int n = 0; n < num_scratch_vars; ++n) {
+            parthenon::par_for_inner(member, ib.s, ib.e + 1, [&](const int i) {
+              const bool bad =
+                  use_order_reduction &&
+                  (troubled(0, k, j, i - 1) == 1.0 ||
+                  troubled(0, k, j, i) == 1.0);
+
+              if (bad) {
+                Real unused_left;
+                Real unused_right;
+
+                // Left state at face i, reconstructed from cell i-1.
+                PLM(prim(n, k, j, i - 2),
+                    prim(n, k, j, i - 1),
+                    prim(n, k, j, i),
+                    wl(n, i), unused_right);
+
+                // Right state at face i, reconstructed from cell i.
+                PLM(prim(n, k, j, i - 1),
+                    prim(n, k, j, i),
+                    prim(n, k, j, i + 1),
+                    unused_left, wr(n, i));
+              }
+            });
+          }
+          member.team_barrier();
+
+          // Normal magnetic field must be identical on both sides.
+          parthenon::par_for_inner(member, ib.s, ib.e + 1, [&](const int i) {
+            const bool bad =
+                use_order_reduction &&
+                (troubled(0, k, j, i - 1) == 1.0 ||
+                troubled(0, k, j, i) == 1.0);
+
+            const Real bx =
+                bad ? Bface(TE::F1, 0, k, j, i)
+                    : Bface_point(TE::F1, 0, k, j, i);
+
+            wl(IB1, i) = bx;
+            wr(IB1, i) = bx;
           });
           member.team_barrier();
         }
 
         if constexpr (fluid == Fluid::ucthlldmhd) {
           auto &uct_hlld = uct_hlld_pack(b);
-          riemann.Solve(member, k, j, ib.s, ib.e+1, IV1, wl, wr, cons, uct_hlld, eos, c_h);
+          if constexpr (is_berta4) {
+            auto &consflux_point = consflux_point_pack(b);
+            riemann.template Solve<true>(member, k, j, ib.s, ib.e+1, IV1, wl, wr,
+                                         consflux_point, uct_hlld, eos, c_h);
+          } else {
+            riemann.template Solve<false>(member, k, j, ib.s, ib.e+1, IV1, wl, wr,
+                                          cons, uct_hlld, eos, c_h);
+          }
         } else {
           riemann.Solve(member, k, j, ib.s, ib.e+1, IV1, wl, wr, cons, eos, c_h);
         }
@@ -1369,19 +1598,33 @@ TaskStatus CalculateFluxes(std::shared_ptr<MeshData<Real>> &md) {
   if (pmb->pmy_mesh->ndim >= 2) {
     scratch_size_in_bytes =
         parthenon::ScratchPad2D<Real>::shmem_size(num_scratch_vars, nx1) * 3;
-    // set the loop limits
+
+    // hydro/GLM/CT defaults
     il = ib.s - 1, iu = ib.e + 1, kl = kb.s, ku = kb.e;
     if (pmb->block_size.nx(X3DIR) == 1) // 2D
       kl = kb.s, ku = kb.e;
     else // 3D
       kl = kb.s - 1, ku = kb.e + 1;
 
-    if (fluid == Fluid::ucthlldmhd){
-      il = ib.s - 2, iu = ib.e + 2, kl = kb.s, ku = kb.e;
-      if (pmb->block_size.nx(X3DIR) == 1) // 2D
-        kl = kb.s, ku = kb.e;
-      else // 3D
-        kl = kb.s - 2, ku = kb.e + 2;
+    if (pmb->block_size.nx(X2DIR) > 1) {
+      if (pmb->block_size.nx(X3DIR) == 1){ // 2D
+        if constexpr (is_berta4){
+          il = ib.s - 3, iu = ib.e + 3, kl = kb.s, ku = kb.e;
+        } else if constexpr (fluid == Fluid::ucthlldmhd && !is_berta4){
+          il = ib.s - 2, iu = ib.e + 2, kl = kb.s, ku = kb.e;
+        } else if constexpr (fluid == Fluid::ctmhd){
+          il = ib.s - 1, iu = ib.e + 1, kl = kb.s, ku = kb.e;
+        }
+      }
+      else{ // 3D
+        if constexpr (is_berta4){
+          il = ib.s - 3, iu = ib.e + 3, kl = kb.s - 3, ku = kb.e + 3;
+        } else if constexpr (fluid == Fluid::ucthlldmhd && !is_berta4){
+          il = ib.s - 2, iu = ib.e + 2, kl = kb.s -2, ku = kb.e + 2;
+        } else if constexpr (fluid == Fluid::ctmhd){
+          il = ib.s - 1, iu = ib.e + 1, kl = kb.s - 1, ku = kb.e + 1;
+        }
+      }
     }
 
     parthenon::par_for_outer(
@@ -1403,17 +1646,68 @@ TaskStatus CalculateFluxes(std::shared_ptr<MeshData<Real>> &md) {
             member.team_barrier();
 
             if (j > jb.s - 1) {
-              if constexpr (fluid == Fluid::ctmhd || fluid == Fluid::ucthlldmhd) {
+              if constexpr (uses_average_bface) {
                 const auto &Bface = Bface_pack(b);
                 parthenon::par_for_inner(member, il, iu, [&](const int i) {
                   wl(IB2, i) = Bface(TE::F2, 0, k, j, i);
                   wr(IB2, i) = Bface(TE::F2, 0, k, j, i);
                 });
                 member.team_barrier();
+              } else if constexpr (is_berta4) {
+                const auto &Bface_point = Bface_point_pack(b);
+                const auto &troubled = troubled_pack(b);
+                const auto &Bface = Bface_pack(b);
+
+                // Replace WENOZ states with PLM states at troubled faces.
+                for (int n = 0; n < num_scratch_vars; ++n) {
+                  parthenon::par_for_inner(member, il, iu, [&](const int i) {
+                    const bool bad =
+                        use_order_reduction &&
+                        (troubled(0, k, j - 1, i) == 1.0 ||
+                         troubled(0, k, j, i) == 1.0);
+
+                    if (bad) {
+                      Real unused_left;
+                      Real unused_right;
+
+                      // Left state at face j, reconstructed from cell j-1.
+                      PLM(prim(n, k, j - 2, i), prim(n, k, j - 1, i),
+                          prim(n, k, j, i), wl(n, i), unused_right);
+
+                      // Right state at face j, reconstructed from cell j.
+                      PLM(prim(n, k, j - 1, i), prim(n, k, j, i),
+                          prim(n, k, j + 1, i), unused_left, wr(n, i));
+                    }
+                  });
+                }
+                member.team_barrier();
+
+                // Normal magnetic field must be identical on both sides.
+                parthenon::par_for_inner(member, il, iu, [&](const int i) {
+                  const bool bad =
+                      use_order_reduction &&
+                      (troubled(0, k, j - 1, i) == 1.0 ||
+                       troubled(0, k, j, i) == 1.0);
+
+                  const Real by =
+                      bad ? Bface(TE::F2, 0, k, j, i)
+                          : Bface_point(TE::F2, 0, k, j, i);
+
+                  wl(IB2, i) = by;
+                  wr(IB2, i) = by;
+                });
+                member.team_barrier();
               }
               if constexpr (fluid == Fluid::ucthlldmhd) {
                 auto &uct_hlld = uct_hlld_pack(b);
-                riemann.Solve(member, k, j, il, iu, IV2, wl, wr, cons, uct_hlld, eos, c_h);
+                if constexpr (is_berta4) {
+                  auto &consflux_point = consflux_point_pack(b);
+                  riemann.template Solve<true>(member, k, j, il, iu, IV2, wl, wr,
+                                               consflux_point, uct_hlld, eos, c_h);
+                } else {
+                  riemann.template Solve<false>(member, k, j, il, iu, IV2, wl, wr,
+                                                cons, uct_hlld, eos, c_h);
+                }
               } else {
                 riemann.Solve(member, k, j, il, iu, IV2, wl, wr, cons, eos, c_h);
               }member.team_barrier();
@@ -1442,10 +1736,27 @@ TaskStatus CalculateFluxes(std::shared_ptr<MeshData<Real>> &md) {
   // k-direction
   if (pmb->pmy_mesh->ndim >= 3) {
     // set the loop limits
+    // hydro/glm/ct defaults
     il = ib.s - 1, iu = ib.e + 1, jl = jb.s - 1, ju = jb.e + 1;
-
-    if (fluid == Fluid::ucthlldmhd){
-      il = ib.s - 2, iu = ib.e + 2, jl = jb.s - 2, ju = jb.e + 2;
+    if (pmb->block_size.nx(X2DIR) > 1) {
+      if (pmb->block_size.nx(X3DIR) == 1){ // 2D
+        if constexpr (is_berta4){
+          il = ib.s - 3, iu = ib.e + 3, jl = jb.s, ju = jb.e;
+        } else if constexpr (fluid == Fluid::ucthlldmhd && !is_berta4){
+          il = ib.s - 2, iu = ib.e + 2, jl = jb.s, ju = jb.e;
+        } else if constexpr (fluid == Fluid::ctmhd){
+          il = ib.s - 1, iu = ib.e + 1, jl = jb.s, ju = jb.e;
+        }
+      }
+      else{ // 3D
+        if constexpr (is_berta4){
+          il = ib.s - 3, iu = ib.e + 3, jl = jb.s - 3, ju = jb.e + 3;
+        } else if constexpr (fluid == Fluid::ucthlldmhd && !is_berta4){
+          il = ib.s - 2, iu = ib.e + 2, jl = jb.s -2, ju = jb.e + 2;
+        } else if constexpr (fluid == Fluid::ctmhd){
+          il = ib.s - 1, iu = ib.e + 1, jl = jb.s - 1, ju = jb.e + 1;
+        }
+      }
     }
 
     parthenon::par_for_outer(
@@ -1467,17 +1778,68 @@ TaskStatus CalculateFluxes(std::shared_ptr<MeshData<Real>> &md) {
             member.team_barrier();
 
             if (k > kb.s - 1) {
-              if constexpr (fluid == Fluid::ctmhd || fluid == Fluid::ucthlldmhd) {
+              if constexpr (uses_average_bface) {
                 const auto &Bface = Bface_pack(b);
                 parthenon::par_for_inner(member, il, iu, [&](const int i) {
                   wl(IB3, i) = Bface(TE::F3, 0, k, j, i);
                   wr(IB3, i) = Bface(TE::F3, 0, k, j, i);
                 });
                 member.team_barrier();
+              } else if constexpr (is_berta4) {
+                const auto &Bface_point = Bface_point_pack(b);
+                const auto &troubled = troubled_pack(b);
+                const auto &Bface = Bface_pack(b);
+
+                // Replace WENOZ states with PLM states at troubled faces.
+                for (int n = 0; n < num_scratch_vars; ++n) {
+                  parthenon::par_for_inner(member, il, iu, [&](const int i) {
+                    const bool bad =
+                        use_order_reduction &&
+                        (troubled(0, k - 1, j, i) == 1.0 ||
+                         troubled(0, k, j, i) == 1.0);
+
+                    if (bad) {
+                      Real unused_left;
+                      Real unused_right;
+
+                      // Left state at face k, reconstructed from cell k-1.
+                      PLM(prim(n, k - 2, j, i), prim(n, k - 1, j, i),
+                          prim(n, k, j, i), wl(n, i), unused_right);
+
+                      // Right state at face k, reconstructed from cell k.
+                      PLM(prim(n, k - 1, j, i), prim(n, k, j, i),
+                          prim(n, k + 1, j, i), unused_left, wr(n, i));
+                    }
+                  });
+                }
+                member.team_barrier();
+
+                // Normal magnetic field must be identical on both sides.
+                parthenon::par_for_inner(member, il, iu, [&](const int i) {
+                  const bool bad =
+                      use_order_reduction &&
+                      (troubled(0, k - 1, j, i) == 1.0 ||
+                       troubled(0, k, j, i) == 1.0);
+
+                  const Real bz =
+                      bad ? Bface(TE::F3, 0, k, j, i)
+                          : Bface_point(TE::F3, 0, k, j, i);
+
+                  wl(IB3, i) = bz;
+                  wr(IB3, i) = bz;
+                });
+                member.team_barrier();
               }
               if constexpr (fluid == Fluid::ucthlldmhd) {
                 auto &uct_hlld = uct_hlld_pack(b);
-                riemann.Solve(member, k, j, il, iu, IV3, wl, wr, cons, uct_hlld, eos, c_h);
+                if constexpr (is_berta4) {
+                  auto &consflux_point = consflux_point_pack(b);
+                  riemann.template Solve<true>(member, k, j, il, iu, IV3, wl, wr,
+                                               consflux_point, uct_hlld, eos, c_h);
+                } else {
+                  riemann.template Solve<false>(member, k, j, il, iu, IV3, wl, wr,
+                                                cons, uct_hlld, eos, c_h);
+                }
               } else {
                 riemann.Solve(member, k, j, il, iu, IV3, wl, wr, cons, eos, c_h);
               }

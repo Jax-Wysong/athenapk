@@ -1,5 +1,7 @@
 ORSZAG_TANG = config["tests"]["orszag_tang"]
 ORSZAG_TANG_RESOLUTION = ORSZAG_TANG["resolution"]
+ORSZAG_TANG_MB = ORSZAG_TANG["meshblock"]
+
 
 def orszag_tang_out(fluid):
     return f"{config['results_root']}/{config['dimension']}/{fluid}/{ORSZAG_TANG['dirname']}"
@@ -28,12 +30,21 @@ rule run_orszag_tang:
         problem_id=lambda wc: f"orszag_tang_{wc.fluid}_Nx{ORSZAG_TANG_RESOLUTION[0]}x{ORSZAG_TANG_RESOLUTION[1]}",
         nx1=ORSZAG_TANG_RESOLUTION[0],
         nx2=ORSZAG_TANG_RESOLUTION[1],
+        nx1_mb=ORSZAG_TANG_MB[0],
+        nx2_mb=ORSZAG_TANG_MB[1],
     resources:
-        runtime=30
+        runtime=120,
+        mem_mb=10000
+        #nodes=1,
+        #tasks=16,
+        #mpi="srun",
+        #mem_mb_per_cpu=2000
         #mem_mb=(default for now) mb means megabyte
         #slurm_partition=(default for now)
         # see https://snakemake.github.io/snakemake-plugin-catalog/plugins/executor/slurm.html
         # for more options (number of tasks per job, cpu per task, mem per cpu, etc)
+        # hydro/pfloor=1e-15 \
+        # hydro/dfloor=1e-15 \
     shell:
         """
         mkdir -p {params.rundir}
@@ -48,8 +59,9 @@ rule run_orszag_tang:
           parthenon/mesh/nx1={params.nx1} \
           parthenon/mesh/nx2={params.nx2} \
           parthenon/mesh/nx3=1 \
-          parthenon/meshblock/nx1={params.nx1} \
-          parthenon/meshblock/nx2={params.nx2} \
+          parthenon/mesh/nghost=3 \
+          parthenon/meshblock/nx1={params.nx1_mb} \
+          parthenon/meshblock/nx2={params.nx2_mb} \
           parthenon/meshblock/nx3=1 \
           parthenon/time/tlim=1.0 \
           parthenon/time/cfl=0.3 \
@@ -57,12 +69,14 @@ rule run_orszag_tang:
           hydro/fluid={wildcards.fluid} \
           hydro/riemann={config[riemann]} \
           hydro/reconstruction={config[reconstruction]} \
+          hydro/convergence_order={config[convergence_order]} \
+          hydro/discontinuity_detector={config[discontinuity_detector]} \
+          hydro/discontinuity_detector_threshold={config[discontinuity_detector_threshold]} \
           hydro/gamma=1.666666666666667 \
-          hydro/pfloor=1e-15 \
           hydro/scratch_level=1 \
           parthenon/output0/file_type=hdf5 \
           parthenon/output0/dt=0.01 \
-          parthenon/output0/variables=prim \
+          parthenon/output0/variables=prim,berta24_troubled \
           > {log.out} 2> {log.err}
     
         touch {output.done}
