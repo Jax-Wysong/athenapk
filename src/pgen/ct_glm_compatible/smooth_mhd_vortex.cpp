@@ -154,8 +154,8 @@ void UserWorkAfterLoop(Mesh *mesh, ParameterInput *pin, parthenon::SimTime &tm) 
   for (auto &pmb : mesh->block_list) {
     const auto hydro_pkg = pmb->packages.Get("Hydro");
     const auto fluid = hydro_pkg->Param<Fluid>("fluid");
-    const bool berta4 =
-        mhd_pgen_utils::UseFourthOrderInitialization(pmb.get());
+    const bool fourth_order_init =
+        mhd_pgen_utils::UseFourthOrderFVInitialization(pmb.get());
 
     IndexRange ib = pmb->cellbounds.GetBoundsI(IndexDomain::interior);
     IndexRange jb = pmb->cellbounds.GetBoundsJ(IndexDomain::interior);
@@ -170,7 +170,7 @@ void UserWorkAfterLoop(Mesh *mesh, ParameterInput *pin, parthenon::SimTime &tm) 
 
     B0_ = VortexAmplitude();
     auto &mbd = pmb->meshblock_data.Get();
-    if (berta4) {
+    if (fourth_order_init) {
       auto &u_dev_face = mbd->Get("Bface").data;
       auto Bface_ref = u_dev_face.GetHostMirrorAndCopy();
       const auto evaluate_point_cons =
@@ -358,7 +358,8 @@ void UserWorkAfterLoop(Mesh *mesh, ParameterInput *pin, parthenon::SimTime &tm) 
   
   const auto hydro_pkg = pmb->packages.Get("Hydro");
   const auto fluid = hydro_pkg->Param<Fluid>("fluid");
-  const bool berta4 = mhd_pgen_utils::UseFourthOrderInitialization(pmb);
+  const bool fourth_order_init =
+      mhd_pgen_utils::UseFourthOrderFVInitialization(pmb);
 
   IndexRange ib = pmb->cellbounds.GetBoundsI(IndexDomain::interior);
   IndexRange jb = pmb->cellbounds.GetBoundsJ(IndexDomain::interior);
@@ -384,7 +385,7 @@ void UserWorkAfterLoop(Mesh *mesh, ParameterInput *pin, parthenon::SimTime &tm) 
     auto &u_dev_face = mbd->Get("Bface").data;
     auto Bface = u_dev_face.GetHostMirrorAndCopy();
 
-    if (berta4) {
+    if (fourth_order_init) {
       const auto evaluate_point_cons =
           [gm1](const Real x1, const Real x2, const Real x3) {
             return EvaluatePointConserved(x1, x2, x3, gm1);
@@ -397,7 +398,7 @@ void UserWorkAfterLoop(Mesh *mesh, ParameterInput *pin, parthenon::SimTime &tm) 
     u_dev_face.DeepCopy(Bface);
   }
 
-  if (!berta4) {
+  if (!fourth_order_init) {
     for (int k = kb.s; k <= kb.e; k++) {
       for (int j = jb.s; j <= jb.e; j++) {
         for (int i = ib.s; i <= ib.e; i++) {

@@ -77,6 +77,7 @@ rule run_current_sheet:
           hydro/discontinuity_detector_threshold={config[discontinuity_detector_threshold]} \
           hydro/gamma=1.666666666666667 \
           hydro/scratch_level=1 \
+          hydro/pfloor=1e-15 \
           parthenon/output0/file_type=hdf5 \
           parthenon/output0/dt=0.05 \
           parthenon/output0/variables=prim \

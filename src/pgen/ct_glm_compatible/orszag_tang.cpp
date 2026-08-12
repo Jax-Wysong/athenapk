@@ -107,9 +107,10 @@ void ProblemGenerator(MeshBlock *pmb, ParameterInput *pin) {
 
   auto &coords = pmb->coords;
   const auto fluid = pmb->packages.Get("Hydro")->Param<Fluid>("fluid");
-  const bool berta4 = mhd_pgen_utils::UseFourthOrderInitialization(pmb);
+  const bool fourth_order_init =
+      mhd_pgen_utils::UseFourthOrderFVInitialization(pmb);
 
-  if (berta4) {
+  if (fourth_order_init) {
     auto &u_dev_face = rc->Get("Bface").data;
     auto Bface = u_dev_face.GetHostMirrorAndCopy();
 

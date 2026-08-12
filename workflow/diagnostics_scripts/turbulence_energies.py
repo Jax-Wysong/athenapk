@@ -11,20 +11,35 @@ import numpy as np
 parser = argparse.ArgumentParser(
     description="Plot mean kinetic and magnetic energy from turbulence HST files."
 )
-parser.add_argument("--glm-weno3-dir", required=True)
-parser.add_argument("--glm-weno5-dir", required=True)
-parser.add_argument("--uct2-dir", required=True)
-parser.add_argument("--uct4-dir", required=True)
+parser.add_argument(
+    "--case",
+    action="append",
+    required=True,
+    metavar="LABEL=DIRECTORY",
+    help="Repeat once for each numerical case to compare.",
+)
 parser.add_argument("--plot", required=True, help="Output energy-history PNG")
 parser.add_argument("--summary", required=True, help="Output text summary")
 args = parser.parse_args()
 
-cases = (
-    ("GLM WENO3", args.glm_weno3_dir),
-    ("GLM WENO5", args.glm_weno5_dir),
-    ("UCT-HLLD 2nd", args.uct2_dir),
-    ("UCT-HLLD Berta4", args.uct4_dir),
-)
+
+def parse_cases(specifications):
+    parsed = []
+    labels = set()
+    for specification in specifications:
+        if "=" not in specification:
+            parser.error(f"invalid --case {specification!r}; expected LABEL=DIRECTORY")
+        label, directory = specification.split("=", 1)
+        if not label or not directory:
+            parser.error(f"invalid --case {specification!r}; expected LABEL=DIRECTORY")
+        if label in labels:
+            parser.error(f"duplicate --case label {label!r}")
+        labels.add(label)
+        parsed.append((label, directory))
+    return parsed
+
+
+cases = parse_cases(args.case)
 
 required_columns = {
     "time",
@@ -89,24 +104,20 @@ for label, directory in cases:
     history_files[label] = filename
     histories[label] = history
 
-colors = {
-    "GLM WENO3": "#d9a514",
-    "GLM WENO5": "#d66a2c",
-    "UCT-HLLD 2nd": "#2774b8",
-    "UCT-HLLD Berta4": "#6f2dbd",
-}
-linestyles = {
-    "GLM WENO3": ":",
-    "GLM WENO5": "--",
-    "UCT-HLLD 2nd": "-.",
-    "UCT-HLLD Berta4": "-",
+color_cycle = plt.get_cmap("tab10")
+line_cycle = ("-", "--", "-.", ":")
+styles = {
+    label: {
+        "color": color_cycle(index % 10),
+        "linestyle": line_cycle[index % len(line_cycle)],
+    }
+    for index, (label, _) in enumerate(cases)
 }
 
 figure, axes = plt.subplots(1, 2, figsize=(12, 4.8), constrained_layout=True)
 for label, history in histories.items():
     style = {
-        "color": colors[label],
-        "linestyle": linestyles[label],
+        **styles[label],
         "linewidth": 2.2,
         "label": label,
     }

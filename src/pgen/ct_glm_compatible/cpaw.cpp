@@ -152,8 +152,8 @@ void UserWorkAfterLoop(Mesh *mesh, ParameterInput *pin, parthenon::SimTime &tm) 
   for (auto &pmb : mesh->block_list) {
     const auto hydro_pkg = pmb->packages.Get("Hydro");
     const auto fluid = hydro_pkg->Param<Fluid>("fluid");
-    const bool berta4 =
-        mhd_pgen_utils::UseFourthOrderInitialization(pmb.get());
+    const bool fourth_order_init =
+        mhd_pgen_utils::UseFourthOrderFVInitialization(pmb.get());
 
     //  Compute errors
     IndexRange ib = pmb->cellbounds.GetBoundsI(IndexDomain::interior);
@@ -167,7 +167,7 @@ void UserWorkAfterLoop(Mesh *mesh, ParameterInput *pin, parthenon::SimTime &tm) 
         pmb->cellbounds.ncellsi(IndexDomain::entire));
 
     auto &rc = pmb->meshblock_data.Get(); // get base container
-    if (berta4) {
+    if (fourth_order_init) {
       auto &u_dev_face = rc->Get("Bface").data;
       auto Bface_ref = u_dev_face.GetHostMirrorAndCopy();
       mhd_pgen_utils::InitializeFourthOrderSmoothMHD(
@@ -220,7 +220,8 @@ void UserWorkAfterLoop(Mesh *mesh, ParameterInput *pin, parthenon::SimTime &tm) 
     }
   
     // for ctmhd, fill up IB1:IB3 with the proper cell-center derived values
-    if (!berta4 && (fluid == Fluid::ctmhd || fluid == Fluid::ucthlldmhd)){
+    if (!fourth_order_init &&
+        (fluid == Fluid::ctmhd || fluid == Fluid::ucthlldmhd)) {
       auto &u_dev_face = rc->Get("Bface").data;
       auto Bface = u_dev_face.GetHostMirrorAndCopy();
       Bface_Fill_Cons(pmb.get(), u_ref, Bface); // dont do the deep copy
@@ -346,7 +347,8 @@ void ProblemGenerator(MeshBlock *pmb, ParameterInput * /*pin*/) {
 
   const auto hydro_pkg = pmb->packages.Get("Hydro");
   const auto fluid = hydro_pkg->Param<Fluid>("fluid");
-  const bool berta4 = mhd_pgen_utils::UseFourthOrderInitialization(pmb);
+  const bool fourth_order_init =
+      mhd_pgen_utils::UseFourthOrderFVInitialization(pmb);
 
   const bool two_d = pmb->pmy_mesh->ndim < 3;
 
@@ -407,7 +409,7 @@ void ProblemGenerator(MeshBlock *pmb, ParameterInput * /*pin*/) {
     auto &u_dev_face = rc->Get("Bface").data;
     auto Bface = u_dev_face.GetHostMirrorAndCopy();
 
-    if (berta4) {
+    if (fourth_order_init) {
       mhd_pgen_utils::InitializeFourthOrderSmoothMHD(
           pmb, u, Bface, EvaluatePointConserved, EvaluateVectorPotential, true);
     } else {
@@ -415,7 +417,7 @@ void ProblemGenerator(MeshBlock *pmb, ParameterInput * /*pin*/) {
     }
     u_dev_face.DeepCopy(Bface);
   }
-  if (!berta4) {
+  if (!fourth_order_init) {
     for (int k = kb.s; k <= kb.e; k++) {
       for (int j = jb.s; j <= jb.e; j++) {
         for (int i = ib.s; i <= ib.e; i++) {

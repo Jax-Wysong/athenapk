@@ -3,7 +3,7 @@
 // Licensed under the BSD 3-Clause License (the "LICENSE").
 //========================================================================================
 //! \file mhd_pgen_utils.hpp
-//! \brief Shared host-side initialization utilities for smooth fourth-order MHD pgens.
+//! \brief Shared host-side initialization utilities for fourth-order FV MHD pgens.
 
 #ifndef PGEN_CT_GLM_COMPATIBLE_MHD_PGEN_UTILS_HPP_
 #define PGEN_CT_GLM_COMPATIBLE_MHD_PGEN_UTILS_HPP_
@@ -20,11 +20,12 @@ namespace mhd_pgen_utils {
 using namespace parthenon::package::prelude;
 using TE = parthenon::TopologicalElement;
 
-// These transformations implement the Cartesian, smooth-data formulas used by the
-// fourth-order Berta24 path. They intentionally do not handle refinement interfaces or
-// nonsmooth problem data.
+// These transformations construct the volume-, area-, and line-averaged initial data
+// required by Cartesian fourth-order finite-volume schemes. They intentionally do not
+// handle refinement interfaces. Problem-specific nonsmooth initialization may require
+// quadrature rather than the smooth point-to-average transformations below.
 
-inline bool UseFourthOrderInitialization(MeshBlock *pmb) {
+inline bool UseFourthOrderFVInitialization(MeshBlock *pmb) {
   const auto hydro_pkg = pmb->packages.Get("Hydro");
   return hydro_pkg->Param<Fluid>("fluid") == Fluid::ucthlldmhd &&
          hydro_pkg->Param<int>("convergence_order") == 4;

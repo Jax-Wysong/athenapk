@@ -1,13 +1,9 @@
 MHD_BLAST_DEFAULTS = {
     "enabled": False,
-    "input": (
-        "/mnt/home/wysongj2/athenapk-fourth-Berta24/inputs/"
-        "ct_glm_compatible/mhd_blast.in"
-    ),
+    "input": repo_path("inputs/ct_glm_compatible/mhd_blast.in"),
     "dirname": "mhd_blast",
-    "plotting_script": (
-        "/mnt/home/wysongj2/athenapk-fourth-Berta24/workflow/"
-        "diagnostics_scripts/mhd_blast_density.py"
+    "plotting_script": repo_path(
+        "workflow/diagnostics_scripts/mhd_blast_density.py"
     ),
     "resolution": [192, 192, 192],
     "meshblock": [48, 48, 48],
@@ -63,11 +59,7 @@ if MHD_BLAST["enabled"]:
 
 rule run_mhd_blast:
     input:
-        exe=config.get(
-            "athenapk_mpi_hdf5",
-            "/mnt/home/wysongj2/athenapk-fourth-Berta24/"
-            "build-mpi-site-hdf5/bin/athenaPK",
-        ),
+        exe=config["athenapk_mpi_hdf5"],
         deck=MHD_BLAST["input"]
     output:
         done=(
@@ -139,6 +131,7 @@ rule run_mhd_blast:
           hydro/discontinuity_detector_epsilon={params.detector_epsilon} \
           hydro/gamma=1.666666666666667 \
           hydro/scratch_level=1 \
+          hydro/pfloor=1e-15 \
           parthenon/output0/file_type=hdf5 \
           parthenon/output0/dt={params.output_dt} \
           parthenon/output0/variables=prim,berta24_troubled \

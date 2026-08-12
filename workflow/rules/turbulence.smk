@@ -1,19 +1,14 @@
 TURBULENCE_DEFAULTS = {
     "enabled": False,
-    "input": (
-        "/mnt/home/wysongj2/athenapk-fourth-Berta24/inputs/"
-        "turbulence_weno_compare.in"
-    ),
+    "input": repo_path("inputs/turbulence_weno_compare.in"),
     "dirname": "turbulence",
-    # Keep the four-way comparison separate from legacy GLM-only results.
+    # Keep configured multi-scheme comparisons separate from single-scheme results.
     "output_group": "mhd_comparison",
-    "energy_plotting_script": (
-        "/mnt/home/wysongj2/athenapk-fourth-Berta24/workflow/"
-        "diagnostics_scripts/turbulence_energies.py"
+    "energy_plotting_script": repo_path(
+        "workflow/diagnostics_scripts/turbulence_energies.py"
     ),
-    "slice_plotting_script": (
-        "/mnt/home/wysongj2/athenapk-fourth-Berta24/workflow/"
-        "diagnostics_scripts/turbulence_slices.py"
+    "slice_plotting_script": repo_path(
+        "workflow/diagnostics_scripts/turbulence_slices.py"
     ),
     "resolution": [128, 128, 128],
     "meshblock": [64, 64, 32],
@@ -68,22 +63,14 @@ TURBULENCE = {
 TURBULENCE_RESOLUTION = TURBULENCE["resolution"]
 TURBULENCE_MB = TURBULENCE["meshblock"]
 TURBULENCE_CASES = TURBULENCE["cases"]
-TURBULENCE_CASE_NAMES = (
-    "weno3",
-    "weno5",
-    "uct2_weno3",
-    "uct4_berta",
-)
+TURBULENCE_CASE_NAMES = tuple(TURBULENCE_CASES)
 
 if len(TURBULENCE_RESOLUTION) != 3 or len(TURBULENCE_MB) != 3:
     raise ValueError("turbulence resolution and meshblock must have three entries")
 if TURBULENCE["enabled"] and config["dimension"] != "3D":
     raise ValueError("the native turbulence workflow test is three-dimensional")
-if set(TURBULENCE_CASES) != set(TURBULENCE_CASE_NAMES):
-    raise ValueError(
-        "turbulence cases must define weno3, weno5, "
-        "uct2_weno3, and uct4_berta"
-    )
+if not TURBULENCE_CASE_NAMES:
+    raise ValueError("turbulence must define at least one numerical case")
 for case_name, case in TURBULENCE_CASES.items():
     required = {
         "label",
@@ -130,11 +117,7 @@ if TURBULENCE["enabled"]:
 
 rule run_turbulence:
     input:
-        exe=config.get(
-            "athenapk_mpi_hdf5",
-            "/mnt/home/wysongj2/athenapk-fourth-Berta24/"
-            "build-mpi-site-hdf5/bin/athenaPK",
-        ),
+        exe=config["athenapk_mpi_hdf5"],
         deck=TURBULENCE["input"]
     output:
         done=f"{turbulence_out()}/{{case}}/phdf-files/run.done"
@@ -142,7 +125,7 @@ rule run_turbulence:
         out=f"{turbulence_out()}/{{case}}/run.out",
         err=f"{turbulence_out()}/{{case}}/run.err"
     wildcard_constraints:
-        case="|".join(TURBULENCE_CASE_NAMES)
+        case="|".join(re.escape(name) for name in TURBULENCE_CASE_NAMES)
     envmodules:
         "foss/2023a",
         "HDF5/1.14.0-gompi-2023a"
@@ -224,40 +207,41 @@ rule run_turbulence:
 
 rule plot_turbulence_energies:
     input:
-        glm_weno3_done=f"{turbulence_run_out('weno3')}/phdf-files/run.done",
-        glm_weno5_done=f"{turbulence_run_out('weno5')}/phdf-files/run.done",
-        uct2_done=f"{turbulence_run_out('uct2_weno3')}/phdf-files/run.done",
-        uct4_done=f"{turbulence_run_out('uct4_berta')}/phdf-files/run.done"
+        done=expand(
+            f"{turbulence_out()}/{{case}}/phdf-files/run.done",
+            case=TURBULENCE_CASE_NAMES,
+        )
     output:
         plot=report(
             f"{turbulence_out()}/turbulence_mean_energies.png",
             caption="../report/turbulence.rst",
             category="3D Tests",
-            subcategory="Driven MHD Turbulence / GLM and UCT-HLLD",
+            subcategory="Driven MHD Turbulence / configured schemes",
             labels={"quantity": "mean kinetic and magnetic energy"},
         ),
         summary=report(
             f"{turbulence_out()}/turbulence_summary.txt",
             caption="../report/turbulence.rst",
             category="3D Tests",
-            subcategory="Driven MHD Turbulence / GLM and UCT-HLLD",
+            subcategory="Driven MHD Turbulence / configured schemes",
             labels={"quantity": "late-time summary"},
         )
     params:
-        glm_weno3_dir=f"{turbulence_run_out('weno3')}/phdf-files",
-        glm_weno5_dir=f"{turbulence_run_out('weno5')}/phdf-files",
-        uct2_dir=f"{turbulence_run_out('uct2_weno3')}/phdf-files",
-        uct4_dir=f"{turbulence_run_out('uct4_berta')}/phdf-files"
+        case_args=lambda wc: " ".join(
+            "--case "
+            + shlex.quote(
+                f"{TURBULENCE_CASES[name]['label']}="
+                f"{turbulence_run_out(name)}/phdf-files"
+            )
+            for name in TURBULENCE_CASE_NAMES
+        )
     resources:
         runtime=30,
         mem_mb=2000
     shell:
         """
         {config[plotting_python]} {TURBULENCE[energy_plotting_script]} \
-          --glm-weno3-dir {params.glm_weno3_dir} \
-          --glm-weno5-dir {params.glm_weno5_dir} \
-          --uct2-dir {params.uct2_dir} \
-          --uct4-dir {params.uct4_dir} \
+          {params.case_args} \
           --plot {output.plot} \
           --summary {output.summary}
         """
@@ -265,37 +249,41 @@ rule plot_turbulence_energies:
 
 rule plot_turbulence_slices:
     input:
-        glm_weno3_done=f"{turbulence_run_out('weno3')}/phdf-files/run.done",
-        glm_weno5_done=f"{turbulence_run_out('weno5')}/phdf-files/run.done",
-        uct2_done=f"{turbulence_run_out('uct2_weno3')}/phdf-files/run.done",
-        uct4_done=f"{turbulence_run_out('uct4_berta')}/phdf-files/run.done"
+        done=expand(
+            f"{turbulence_out()}/{{case}}/phdf-files/run.done",
+            case=TURBULENCE_CASE_NAMES,
+        )
     output:
         density=report(
             f"{turbulence_out()}/turbulence_density_final.png",
             caption="../report/turbulence.rst",
             category="3D Tests",
-            subcategory="Driven MHD Turbulence / GLM and UCT-HLLD",
+            subcategory="Driven MHD Turbulence / configured schemes",
             labels={"quantity": "density", "slice": "z = 0.5"},
         ),
         bmag=report(
             f"{turbulence_out()}/turbulence_Bmag_final.png",
             caption="../report/turbulence.rst",
             category="3D Tests",
-            subcategory="Driven MHD Turbulence / GLM and UCT-HLLD",
+            subcategory="Driven MHD Turbulence / configured schemes",
             labels={"quantity": "magnetic-field magnitude", "slice": "z = 0.5"},
         ),
         velocity=report(
             f"{turbulence_out()}/turbulence_velocity_final.png",
             caption="../report/turbulence.rst",
             category="3D Tests",
-            subcategory="Driven MHD Turbulence / GLM and UCT-HLLD",
+            subcategory="Driven MHD Turbulence / configured schemes",
             labels={"quantity": "velocity magnitude", "slice": "z = 0.5"},
         )
     params:
-        glm_weno3_dir=f"{turbulence_run_out('weno3')}/phdf-files",
-        glm_weno5_dir=f"{turbulence_run_out('weno5')}/phdf-files",
-        uct2_dir=f"{turbulence_run_out('uct2_weno3')}/phdf-files",
-        uct4_dir=f"{turbulence_run_out('uct4_berta')}/phdf-files",
+        case_args=lambda wc: " ".join(
+            "--case "
+            + shlex.quote(
+                f"{TURBULENCE_CASES[name]['label']}="
+                f"{turbulence_run_out(name)}/phdf-files"
+            )
+            for name in TURBULENCE_CASE_NAMES
+        ),
         expected_final_time=TURBULENCE["tlim"]
     resources:
         runtime=60,
@@ -303,10 +291,7 @@ rule plot_turbulence_slices:
     shell:
         """
         {config[plotting_python]} {TURBULENCE[slice_plotting_script]} \
-          --glm-weno3-dir {params.glm_weno3_dir} \
-          --glm-weno5-dir {params.glm_weno5_dir} \
-          --uct2-dir {params.uct2_dir} \
-          --uct4-dir {params.uct4_dir} \
+          {params.case_args} \
           --density {output.density} \
           --bmag {output.bmag} \
           --velocity {output.velocity} \

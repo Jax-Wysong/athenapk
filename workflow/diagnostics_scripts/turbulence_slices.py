@@ -1,6 +1,7 @@
 """Plot matched final midplane slices for GLM and UCT-HLLD turbulence runs."""
 
 import argparse
+import math
 from pathlib import Path
 
 import matplotlib.colors as colors
@@ -14,10 +15,13 @@ yt.set_log_level(50)
 parser = argparse.ArgumentParser(
     description="Make matched GLM/UCT-HLLD turbulence slices through z=0.5."
 )
-parser.add_argument("--glm-weno3-dir", required=True)
-parser.add_argument("--glm-weno5-dir", required=True)
-parser.add_argument("--uct2-dir", required=True)
-parser.add_argument("--uct4-dir", required=True)
+parser.add_argument(
+    "--case",
+    action="append",
+    required=True,
+    metavar="LABEL=DIRECTORY",
+    help="Repeat once for each numerical case to compare.",
+)
 parser.add_argument("--density", required=True, help="Output density PNG")
 parser.add_argument("--bmag", required=True, help="Output magnetic-magnitude PNG")
 parser.add_argument("--velocity", required=True, help="Output velocity-magnitude PNG")
@@ -27,12 +31,24 @@ parser.add_argument("--percentile-min", type=float, default=1.0)
 parser.add_argument("--percentile-max", type=float, default=99.0)
 args = parser.parse_args()
 
-cases = (
-    ("GLM WENO3", args.glm_weno3_dir),
-    ("GLM WENO5", args.glm_weno5_dir),
-    ("UCT-HLLD 2nd", args.uct2_dir),
-    ("UCT-HLLD Berta4", args.uct4_dir),
-)
+
+def parse_cases(specifications):
+    parsed = []
+    labels = set()
+    for specification in specifications:
+        if "=" not in specification:
+            parser.error(f"invalid --case {specification!r}; expected LABEL=DIRECTORY")
+        label, directory = specification.split("=", 1)
+        if not label or not directory:
+            parser.error(f"invalid --case {specification!r}; expected LABEL=DIRECTORY")
+        if label in labels:
+            parser.error(f"duplicate --case label {label!r}")
+        labels.add(label)
+        parsed.append((label, directory))
+    return parsed
+
+
+cases = parse_cases(args.case)
 
 if args.time_tolerance <= 0.0:
     parser.error("--time-tolerance must be positive")
@@ -111,7 +127,15 @@ def render_comparison(field, output, title, colorbar_label, cmap, logarithmic):
     lower, upper = common_limits(list(arrays.values()), logarithmic)
     norm = colors.LogNorm(lower, upper) if logarithmic else colors.Normalize(lower, upper)
 
-    figure, axes = plt.subplots(2, 2, figsize=(11, 10), constrained_layout=True)
+    ncols = min(2, len(cases))
+    nrows = math.ceil(len(cases) / ncols)
+    figure, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(5.5 * ncols, 5.0 * nrows),
+        constrained_layout=True,
+        squeeze=False,
+    )
     image = None
     for axis, (label, _) in zip(axes.flat, cases):
         ds = datasets[label]
@@ -133,6 +157,9 @@ def render_comparison(field, output, title, colorbar_label, cmap, logarithmic):
         axis.set_title(f"{label}, t = {times[label]:.3f}")
         axis.set_xlabel("x")
         axis.set_ylabel("y")
+
+    for axis in axes.flat[len(cases) :]:
+        axis.set_visible(False)
 
     figure.suptitle(f"{title} at z = 0.5")
     colorbar = figure.colorbar(image, ax=axes.ravel().tolist(), shrink=0.88)

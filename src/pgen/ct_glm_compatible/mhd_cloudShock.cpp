@@ -301,7 +301,8 @@ void ProblemGenerator(MeshBlock *pmb, ParameterInput *pin) {
   auto jb = pmb->cellbounds.GetBoundsJ(IndexDomain::interior);
   auto kb = pmb->cellbounds.GetBoundsK(IndexDomain::interior);
 
- const bool berta4 = mhd_pgen_utils::UseFourthOrderInitialization(pmb);
+  const bool fourth_order_init =
+      mhd_pgen_utils::UseFourthOrderFVInitialization(pmb);
 
 
   auto gamma = pin->GetReal("hydro", "gamma");
@@ -318,7 +319,7 @@ void ProblemGenerator(MeshBlock *pmb, ParameterInput *pin) {
     auto &u_dev_face = mbd->Get("Bface").data;
     auto Bface = u_dev_face.GetHostMirrorAndCopy();
 
-    if (berta4) {
+    if (fourth_order_init) {
       InitializeFourthOrderCloudShock(pmb, pin, u, Bface);
     } else {
       Bface_Fill_Cons(pmb, u, Bface, pin);
@@ -330,7 +331,7 @@ void ProblemGenerator(MeshBlock *pmb, ParameterInput *pin) {
 
   // The fourth-order branch has already supplied cell-volume averages. Preserve
   // those values instead of replacing them with samples at cell centers.
-  if (!berta4) {
+  if (!fourth_order_init) {
     for (int k = kb.s; k <= kb.e; k++) {
       for (int j = jb.s; j <= jb.e; j++) {
         for (int i = ib.s; i <= ib.e; i++) {

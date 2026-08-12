@@ -13,20 +13,6 @@ if FIELD_LOOP["enabled"]:
         plane=FIELD_LOOP_PLANES,
     )
 
-if (
-    FIELD_LOOP["enabled"]
-    and config["dimension"] == "3D"
-    and FIELD_LOOP.get("paraview_movie", {}).get("enabled", False)
-):
-    field_loop_targets += expand(
-        "{outdir}/field_loop_3D_movie.mp4",
-        outdir=[
-            field_loop_base_out(fluid)
-            for fluid in FIELD_LOOP["paraview_movie"].get("fluids", [])
-            if fluid in config["fluids"]
-        ],
-    )
-
 rule run_field_loop:
     input:
         exe=config["athenapk"],
@@ -154,22 +140,3 @@ else:
             cd {params.outdir}
             {config[plotting_python]} {FIELD_LOOP[plotting_script]} {params.phdf} -o field_loop
             """
-
-rule add_field_loop_paraview_movie:
-    input:
-        src=lambda wc: FIELD_LOOP["paraview_movie"]["source"]
-    output:
-        movie=report(
-            f"{config['results_root']}/{config['dimension']}/{{fluid}}/{FIELD_LOOP['dirname']}/field_loop_3D_movie.mp4",
-            caption="../report/field_loop_paraview.rst",
-            category=f"{config['dimension']} Tests",
-            subcategory="{fluid} / Field Loop",
-            labels={"fluid": "{fluid}", "mesh": "uniform", "quantity": "3D ParaView rendering"},
-        )
-    params:
-        outdir=lambda wc: field_loop_base_out(wc.fluid)
-    shell:
-        """
-        mkdir -p {params.outdir}
-        cp {input.src} {output.movie}
-        """

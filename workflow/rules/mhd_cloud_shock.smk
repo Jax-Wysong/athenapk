@@ -1,13 +1,9 @@
 MHD_CLOUD_SHOCK_DEFAULTS = {
     "enabled": False,
-    "input": (
-        "/mnt/home/wysongj2/athenapk-fourth-Berta24/inputs/"
-        "ct_glm_compatible/mhd_cloud_shock.in"
-    ),
+    "input": repo_path("inputs/ct_glm_compatible/mhd_cloud_shock.in"),
     "dirname": "mhd_cloud_shock",
-    "plotting_script": (
-        "/mnt/home/wysongj2/athenapk-fourth-Berta24/workflow/"
-        "diagnostics_scripts/mhd_cloud_shock_density.py"
+    "plotting_script": repo_path(
+        "workflow/diagnostics_scripts/mhd_cloud_shock_density.py"
     ),
     "resolution": [128, 128, 128],
     "meshblock": [32, 32, 32],
@@ -59,11 +55,7 @@ if MHD_CLOUD_SHOCK["enabled"]:
 
 rule run_mhd_cloud_shock:
     input:
-        exe=config.get(
-            "athenapk_mpi_hdf5",
-            "/mnt/home/wysongj2/athenapk-fourth-Berta24/"
-            "build-mpi-hdf5/bin/athenaPK",
-        ),
+        exe=config["athenapk_mpi_hdf5"],
         deck=MHD_CLOUD_SHOCK["input"]
     output:
         done=(

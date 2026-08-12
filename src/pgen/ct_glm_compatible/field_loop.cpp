@@ -484,7 +484,8 @@ void ProblemGenerator(MeshBlock *pmb, ParameterInput *pin) {
   // gives us ctmhd ucthlldmhd or glmmhd
   const auto hydro_pkg = pmb->packages.Get("Hydro");
   const auto fluid = hydro_pkg->Param<Fluid>("fluid");
-  const bool berta4 = mhd_pgen_utils::UseFourthOrderInitialization(pmb);
+  const bool fourth_order_init =
+      mhd_pgen_utils::UseFourthOrderFVInitialization(pmb);
 
   IndexRange ib = pmb->cellbounds.GetBoundsI(IndexDomain::interior);
   IndexRange jb = pmb->cellbounds.GetBoundsJ(IndexDomain::interior);
@@ -689,7 +690,7 @@ void ProblemGenerator(MeshBlock *pmb, ParameterInput *pin) {
     auto &u_dev_face = mbd->Get("Bface").data;
     auto Bface = u_dev_face.GetHostMirrorAndCopy();
 
-    if (berta4) {
+    if (fourth_order_init) {
       PARTHENON_REQUIRE_THROWS(
           iprob == 1 || iprob == 4,
           "Fourth-order field-loop initialization currently supports iprob=1 and iprob=4");
@@ -702,7 +703,7 @@ void ProblemGenerator(MeshBlock *pmb, ParameterInput *pin) {
 
   // Initialize density and momenta.  If drat != 1, then density and temperature will be
   // different inside loop than background values
-  if (!berta4) {
+  if (!fourth_order_init) {
     for (int k = kb.s; k <= kb.e; k++) {
       for (int j = jb.s; j <= jb.e; j++) {
         for (int i = ib.s; i <= ib.e; i++) {
