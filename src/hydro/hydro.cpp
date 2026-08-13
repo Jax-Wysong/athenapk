@@ -23,7 +23,9 @@
 #include "../recon/limo3_simple.hpp"
 #include "../recon/plm_simple.hpp"
 #include "../recon/ppm_simple.hpp"
+#include "../recon/weno3_classic.hpp"
 #include "../recon/weno3_simple.hpp"
+#include "../recon/weno5_classic.hpp"
 #include "../recon/wenoz_simple.hpp"
 #include "../refinement/refinement.hpp"
 #include "../tracers/tracers.hpp"
@@ -401,6 +403,17 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
   }
   pkg->AddParam<>("ct_energy_correction", ct_energy_correction);
 
+  // Scheme-neutral order selection used by shared problem generators. The common
+  // branch intentionally provides only second-order evolution; fourth-order scheme
+  // branches relax this requirement when they add their numerical method.
+  const int convergence_order =
+      pin->GetOrAddInteger("hydro", "convergence_order", 2);
+  PARTHENON_REQUIRE(
+      convergence_order == 2,
+      "AthenaPK hydro: the fourth-order common branch only provides second-order "
+      "evolution. A fourth-order scheme branch must enable convergence_order=4.")
+  pkg->AddParam<>("convergence_order", convergence_order);
+
   // Following params should (currently) be present independent of solver because
   // they're all used in the main loop.
   pkg->AddParam<>("calc_c_h", calc_c_h);
@@ -433,6 +446,12 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
   } else if (recon_str == "weno3") {
     recon = Reconstruction::weno3;
     recon_need_nghost = 2;
+  } else if (recon_str == "weno3js") {
+    recon = Reconstruction::weno3js;
+    recon_need_nghost = 2;
+  } else if (recon_str == "weno5js") {
+    recon = Reconstruction::weno5js;
+    recon_need_nghost = 3;
   } else if (recon_str == "wenoz") {
     recon = Reconstruction::wenoz;
     recon_need_nghost = 3;
@@ -476,9 +495,11 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
         "with HLLD Riemann solves ");
   }
   if (fluid == Fluid::ucthlldmhd &&
-      (recon != Reconstruction::plm || riemann != RiemannSolver::hlld)) {
+      ((recon != Reconstruction::plm && recon != Reconstruction::weno3) ||
+       riemann != RiemannSolver::hlld)) {
     PARTHENON_FAIL(
-        "AthenaPK hydro: ucthlldmhd currently only supports PLM reconstruction "
+        "AthenaPK hydro: ucthlldmhd currently only supports PLM or WENO3 "
+        "reconstruction "
         "and requires HLLD Riemann solves ");
   }
 
@@ -522,12 +543,15 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
   add_flux_fun<Fluid::glmmhd, Reconstruction::plm, RiemannSolver::hlld>(flux_functions);
   add_flux_fun<Fluid::glmmhd, Reconstruction::ppm, RiemannSolver::hlld>(flux_functions);
   add_flux_fun<Fluid::glmmhd, Reconstruction::weno3, RiemannSolver::hlld>(flux_functions);
+  add_flux_fun<Fluid::glmmhd, Reconstruction::weno3js, RiemannSolver::hlld>(flux_functions);
+  add_flux_fun<Fluid::glmmhd, Reconstruction::weno5js, RiemannSolver::hlld>(flux_functions);
   add_flux_fun<Fluid::glmmhd, Reconstruction::limo3, RiemannSolver::hlld>(flux_functions);
   add_flux_fun<Fluid::glmmhd, Reconstruction::wenoz, RiemannSolver::hlld>(flux_functions);
   // (jwysong) only adding 1 ctmhd option for now
   add_flux_fun<Fluid::ctmhd, Reconstruction::plm, RiemannSolver::hlld>(flux_functions);
-  // (jwysong) only adding 1 ucthlldmhd option for now
+  // Second-order UCT-HLLD options.
   add_flux_fun<Fluid::ucthlldmhd, Reconstruction::plm, RiemannSolver::hlld>(flux_functions);
+  add_flux_fun<Fluid::ucthlldmhd, Reconstruction::weno3, RiemannSolver::hlld>(flux_functions);
 
   // Add first order recon with LLF fluxes (implemented for testing as tight loop)
   flux_functions[std::make_tuple(Fluid::euler, Reconstruction::dc, RiemannSolver::llf)] =
@@ -582,6 +606,8 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
     integrator = Integrator::rk2;
   } else if (integrator_str == "rk3") {
     integrator = Integrator::rk3;
+  } else if (integrator_str == "rk4") {
+    integrator = Integrator::rk4;
   } else if (integrator_str == "vl2") {
     integrator = Integrator::vl2;
     // override first stage (predictor) to first order
@@ -595,8 +621,11 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
   auto first_order_flux_correct =
       pin->GetOrAddBoolean("hydro", "first_order_flux_correct", false);
   PARTHENON_REQUIRE(
-      !((fluid == Fluid::ctmhd || fluid == Fluid::ucthlldmhd) && first_order_flux_correct),
-      "AthenaPK hydro: first_order_flux_correct is not currently supported with ctmhd or ucthlldmhd.");
+      !((fluid == Fluid::ctmhd || fluid == Fluid::ucthlldmhd ||
+         integrator == Integrator::rk4) &&
+        first_order_flux_correct),
+      "AthenaPK hydro: first_order_flux_correct is not currently supported with "
+      "ctmhd, ucthlldmhd, or RK4 time stepping.");
   pkg->AddParam<>("first_order_flux_correct", first_order_flux_correct);
   if (first_order_flux_correct) {
     if (fluid == Fluid::euler) {

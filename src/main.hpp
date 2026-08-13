@@ -40,8 +40,18 @@ enum { AL = 0, AR = 1, DL = 2, DR = 3, VBART1 = 4, VBART2 = 5 };
 enum { IV1 = 1, IV2 = 2, IV3 = 3, IPR = 4 };
 
 enum class RiemannSolver { undefined, none, hlle, llf, hllc, hlld };
-enum class Reconstruction { undefined, dc, plm, ppm, wenoz, weno3, limo3 };
-enum class Integrator { undefined, rk1, rk2, vl2, rk3 };
+enum class Reconstruction {
+  undefined,
+  dc,
+  plm,
+  ppm,
+  wenoz,
+  weno3,
+  weno3js,
+  weno5js,
+  limo3
+};
+enum class Integrator { undefined, rk1, rk2, vl2, rk3, rk4 };
 enum class Fluid { undefined, euler, glmmhd, ctmhd, ucthlldmhd };
 enum class Cooling { none, tabular };
 enum class Conduction { none, isotropic, anisotropic };
