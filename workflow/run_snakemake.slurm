@@ -3,7 +3,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
-#SBATCH --time=00-07:00:00
+#SBATCH --time=4-00:00:00
 #SBATCH --output=/mnt/home/wysongj2/athenapk-fourth-Berta24/workflow/logs/snakemake-controller.%j.out
 #SBATCH --error=/mnt/home/wysongj2/athenapk-fourth-Berta24/workflow/logs/snakemake-controller.%j.err
 
@@ -20,9 +20,10 @@ module load foss/2023a
 module load HDF5/1.14.0-gompi-2023a
 
 snakemake -s workflow/Snakefile \
-  --configfile workflow/config.yaml \
+  --configfile workflow/config_local_4th_order.yaml \
   --executor slurm \
   --jobs 10 \
+  --resources turbulence_spectra_slots=2 \
   --rerun-incomplete \
   --keep-going \
   --latency-wait 60 \

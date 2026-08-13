@@ -90,10 +90,23 @@ def load_history(directory):
     if not np.all(finite):
         raise RuntimeError(f"Non-finite turbulence history values in {filename}")
 
-    # If a restart appended a duplicate time, retain the final occurrence.
-    reverse_unique = np.unique(history["time"][::-1], return_index=True)[1]
-    keep = np.sort(values.shape[0] - 1 - reverse_unique)
+    # A restarted run appends to the existing HST. If the restart checkpoint
+    # predates the final history row, this leaves an abandoned future segment
+    # followed by a backward jump in time. Reconstruct the accepted trajectory
+    # by discarding all accumulated rows at or after each newly appended time.
+    keep = []
+    times = history["time"]
+    for index, time in enumerate(times):
+        while keep and times[keep[-1]] >= time:
+            keep.pop()
+        keep.append(index)
+    keep = np.asarray(keep, dtype=int)
     history = {name: column[keep] for name, column in history.items()}
+
+    if history["time"].size > 1 and not np.all(np.diff(history["time"]) > 0.0):
+        raise RuntimeError(
+            f"Could not reconstruct a strictly increasing history from {filename}"
+        )
     return filename, history
 
 

@@ -528,15 +528,28 @@ void ProblemGenerator(Mesh *pmesh, ParameterInput *pin, MeshData<Real> *md) {
     }
   } else if (ct) {
     PARTHENON_REQUIRE_THROWS(
-        b_config == 0,
-        "UCT/CT turbulence initialization currently supports only b_config=0.")
+        b_config == 0 || b_config == 2,
+        "UCT/CT turbulence initialization currently supports only b_config=0 or 2.")
 
     auto Bface_pack = md->PackVariables(std::vector<std::string>{"Bface"});
     pmb->par_for(
-        "Init uniform turbulence B1 faces", 0, num_blocks - 1, kb.s, kb.e, jb.s,
+        "Init turbulence B1 faces", 0, num_blocks - 1, kb.s, kb.e, jb.s,
         jb.e, ib.s, ib.e + 1,
         KOKKOS_LAMBDA(const int b, const int k, const int j, const int i) {
-          Bface_pack(b)(TE::F1, 0, k, j, i) = b0;
+          const auto &coords = Bface_pack.GetCoords(b);
+          Real b1_face = b0;
+          if (b_config == 2) {
+            // B1 = Bamp sin(kz z), Bamp = sqrt(2) b0. Because an x1 face
+            // spans x3, store its exact face-area average rather than the
+            // point value at the face center. This is also the discrete curl
+            // of Ay = Bamp cos(kz z) / kz.
+            const Real dz = coords.Dxc<3>(k);
+            const Real half_kdz = 0.5 * kz * dz;
+            const Real sinc = Kokkos::sin(half_kdz) / half_kdz;
+            const Real b_amp = b0 / Kokkos::sqrt(0.5);
+            b1_face = b_amp * Kokkos::sin(kz * coords.Xc<3>(k)) * sinc;
+          }
+          Bface_pack(b)(TE::F1, 0, k, j, i) = b1_face;
         });
     pmb->par_for(
         "Init uniform turbulence B2 faces", 0, num_blocks - 1, kb.s, kb.e, jb.s,
@@ -580,10 +593,35 @@ void ProblemGenerator(Mesh *pmesh, ParameterInput *pin, MeshData<Real> *md) {
           u(IEN, k, j, i) +=
               0.5 * (SQR(u(IB1, k, j, i)) + SQR(u(IB2, k, j, i)) + SQR(u(IB3, k, j, i)));
         } else if (ct) {
-          u(IB1, k, j, i) = b0;
+          const auto &coords = cons.GetCoords(b);
+          Real b1_cell = b0;
+          Real b2_cell_average = b0 * b0;
+
+          if (b_config == 2) {
+            const Real dz = coords.Dxc<3>(k);
+            const Real kdz = kz * dz;
+            const Real half_kdz = 0.5 * kdz;
+            const Real sinc = Kokkos::sin(half_kdz) / half_kdz;
+            const Real b_amp = b0 / Kokkos::sqrt(0.5);
+            const Real zc = coords.Xc<3>(k);
+
+            // For this field, the two x1 faces bounding a cell have the same
+            // value, so this is both the face-area average initialized above
+            // and the cell-centered value produced by center_Mag_Field().
+            b1_cell = b_amp * Kokkos::sin(kz * zc) * sinc;
+
+            // Exact volume average of B1^2 over this cell. This is not, in
+            // general, equal to the square of the volume-averaged B1.
+            b2_cell_average =
+                SQR(b_amp) *
+                (0.5 - Kokkos::cos(2.0 * kz * zc) * Kokkos::sin(kdz) /
+                           (2.0 * kdz));
+          }
+
+          u(IB1, k, j, i) = b1_cell;
           u(IB2, k, j, i) = 0.0;
           u(IB3, k, j, i) = 0.0;
-          u(IEN, k, j, i) += 0.5 * b0 * b0;
+          u(IEN, k, j, i) += 0.5 * b2_cell_average;
         }
       });
 }

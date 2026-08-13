@@ -25,6 +25,7 @@ for test in config.get("tests", {}).values():
         "field_line_script",
         "energy_plotting_script",
         "slice_plotting_script",
+        "spectrum_plotting_script",
     ):
         if path_key in test:
             test[path_key] = repo_path(test[path_key])

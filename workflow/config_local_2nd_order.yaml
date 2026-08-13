@@ -33,7 +33,7 @@ tests:
     resolutions: [8, 16, 32, 64]
 
   linear_wave:
-    enabled: true
+    enabled: false
     input: inputs/ct_glm_compatible/linear_mhd_wave.in
     dirname: linear_mhd_wave
     order_script: workflow/diagnostics_scripts/linear_mhd_wave_orders.py
@@ -66,7 +66,7 @@ tests:
       down-left: [-1, -1, 0]
 
   cpaw:
-    enabled: true
+    enabled: false
     input: inputs/ct_glm_compatible/cpaw.in
     dirname: cpaw
     order_script: workflow/diagnostics_scripts/cpaw_orders.py
@@ -96,7 +96,7 @@ tests:
         dir: 2
 
   field_loop:
-    enabled: true
+    enabled: false
     input: inputs/ct_glm_compatible/field_loop.in
     dirname: field_loop
     plotting_script: workflow/diagnostics_scripts/field_loop_video.py
@@ -161,7 +161,7 @@ tests:
     meshblock: [128, 128]
 
   mhd_cloud_shock:
-    enabled: true
+    enabled: false
     input: inputs/ct_glm_compatible/mhd_cloud_shock.in
     dirname: mhd_cloud_shock
     plotting_script: workflow/diagnostics_scripts/mhd_cloud_shock_density.py
@@ -191,11 +191,13 @@ tests:
   # data-driven so another branch can replace or extend the list without editing rules.
   turbulence:
     enabled: false
+    spectra:
+      enabled: false
     input: inputs/turbulence_weno_compare.in
     dirname: turbulence
     output_group: mhd_comparison
-    energy_plotting_script: workflow/diagnostics_scripts/turbulence_energies.py
-    slice_plotting_script: workflow/diagnostics_scripts/turbulence_slices.py
+    energy_plotting_script: workflow/diagnostics_scripts/turbulence/energies.py
+    slice_plotting_script: workflow/diagnostics_scripts/turbulence/slices.py
     resolution: [64, 64, 64]
     meshblock: [32, 32, 32]
     tlim: 15.0
@@ -234,5 +236,7 @@ tests:
         integrator: rk4
         convergence_order: 4
         first_order_flux_correct: false
+    nodes: 1
+    tasks_per_node: 8
     mpi_tasks: 8
     mem_mb_per_cpu: 4000

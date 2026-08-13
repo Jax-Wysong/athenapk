@@ -191,48 +191,63 @@ tests:
   # data-driven so another branch can replace or extend the list without editing rules.
   turbulence:
     enabled: false
-    input: inputs/turbulence_weno_compare.in
+    input: inputs/turbulence_wendeln.in
     dirname: turbulence
     output_group: mhd_comparison
-    energy_plotting_script: workflow/diagnostics_scripts/turbulence_energies.py
-    slice_plotting_script: workflow/diagnostics_scripts/turbulence_slices.py
+    energy_plotting_script: workflow/diagnostics_scripts/turbulence/energies.py
+    slice_plotting_script: workflow/diagnostics_scripts/turbulence/slices.py
+    spectrum_plotting_script: workflow/diagnostics_scripts/turbulence/plot_power_spectra.py
     resolution: [64, 64, 64]
     meshblock: [32, 32, 32]
-    tlim: 15.0
-    history_dt: 0.005
-    output_dt: 5.0
+    tlim: 60.0
+    history_dt: 0.1
+    output_dt: 0.5
     cases:
-      glm_weno3:
-        label: GLM-HLLD WENO3 + VL2
+      glm_weno3js:
+        label: AthenaPK WENO3
         fluid: glmmhd
         riemann: hlld
-        reconstruction: weno3
-        integrator: vl2
+        reconstruction: weno3js
+        integrator: rk3
         convergence_order: 2
-        first_order_flux_correct: true
-      glm_weno5:
-        label: GLM-HLLD WENO5 + VL2
+        first_order_flux_correct: false
+        nghost: 2
+      glm_weno5js:
+        label: AthenaPK WENO5
         fluid: glmmhd
         riemann: hlld
-        reconstruction: wenoz
-        integrator: vl2
+        reconstruction: weno5js
+        integrator: rk3
         convergence_order: 2
-        first_order_flux_correct: true
+        first_order_flux_correct: false
+        nghost: 3
       uct2_weno3:
-        label: UCT-HLLD WENO3 + RK2
+        label: UCT-HLLD 2nd
         fluid: ucthlldmhd
         riemann: hlld
         reconstruction: weno3
         integrator: rk2
         convergence_order: 2
         first_order_flux_correct: false
+        nghost: 2
       uct4_berta:
-        label: UCT-HLLD Berta4 + RK4
+        label: UCT-HLLD Berta4
         fluid: ucthlldmhd
         riemann: hlld
         reconstruction: wenoz_point
         integrator: rk4
         convergence_order: 4
         first_order_flux_correct: false
+        nghost: 3
+    spectra:
+      enabled: true
+      dump_ids: [118, 119, 120]
+      analysis_nodes: 1
+      analysis_tasks: 8
+      mem_mb_per_cpu: 4000
+      runtime: 120
+      kernels: [Gauss]
+    nodes: 1
+    tasks_per_node: 8
     mpi_tasks: 8
     mem_mb_per_cpu: 4000

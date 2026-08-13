@@ -1,0 +1,478 @@
+import yt
+import numpy as np
+from mpi4py import MPI
+from mpi4py_fft import newDistArray
+import FFTHelperFuncs
+import sys
+import h5py
+import time
+
+comm  = MPI.COMM_WORLD
+rank = comm.Get_rank()
+size = comm.Get_size()
+eos = 'unset'
+
+def read_fields(args):
+    """
+    Read all fields of a simulation snapshot
+
+    args : forwarded command line arguments from the main script
+    """
+    # data dictionary
+    fields = {
+        'B' : None,
+        'Acc' : None,
+        'P' : None,
+    }
+    rhoField = None
+    pressField = None
+    magFields = None
+    accFields = None
+
+    global eos
+    eos = args['eos']
+
+    time_start = MPI.Wtime()
+
+    if args['data_type'] == 'Enzo':
+        rhoField = "Density"
+        velFields = ["x-velocity","y-velocity","z-velocity"]
+        if args['b']:
+            magFields = ["Bx","By","Bz"]
+        if args['forced']:
+            accFields = ['x-acceleration','y-acceleration','z-acceleration']
+        if args['eos'] == 'adiabatic':
+            pressField = 'pressure'
+
+        readAllFieldsWithYT(fields, args['data_path'], args['res'],
+                            rhoField, velFields, magFields,
+                            accFields, pressField)
+
+    elif args['data_type'][:8] == 'AthenaPP':
+        rhoField = ('athena_pp', 'rho')
+        velFields = [('athena_pp', 'vel1'), ('athena_pp', 'vel2'), ('athena_pp', 'vel3')]
+        if args['b']:
+            magFields = [('athena_pp', 'Bcc1'), ('athena_pp', 'Bcc2'), ('athena_pp', 'Bcc3')]
+        if args['forced']:
+            accFields = [('athena_pp', 'acceleration_x'),
+                         ('athena_pp', 'acceleration_y'),
+                         ('athena_pp', 'acceleration_z')]
+
+        if args['eos'] == 'adiabatic':
+            pressField = ('athena_pp', 'press')
+
+        if 'HDF' == args['data_type'][-3:]:
+            readAllFieldsWithHDF(fields,'./Turb.prim.' + args['data_path'], args['res'],
+                                rhoField, velFields, magFields,
+                                None, pressField,'F',use_athena_hdf=True)
+            readAllFieldsWithHDF(fields,'./Turb.acc.' + args['data_path'], args['res'],
+                                None, None, None,
+                                accFields, None,'F',use_athena_hdf=True)
+        elif 'HDFC' == args['data_type'][-4:]:
+            readAllFieldsWithHDF(fields,args['data_path'], args['res'],
+                                rhoField, velFields, magFields,
+                                accFields, pressField,'C')
+        else:
+            readAllFieldsWithYT(fields,'./Turb.prim.' + args['data_path'], args['res'],
+                                rhoField, velFields, magFields,
+                                None, pressField)
+            readAllFieldsWithYT(fields,'./Turb.acc.' + args['data_path'], args['res'],
+                                None, None, None,
+                                accFields, None)
+
+
+
+    elif args['data_type'] == 'AthenaHDFC':
+        rhoField = 'density'
+        velFields = ['velocity_x', 'velocity_y', 'velocity_z']
+        if args['b']:
+            magFields = ['cell_centered_B_x', 'cell_centered_B_y', 'cell_centered_B_z']
+        if args['forced']:
+            accFields = ['acceleration_x', 'acceleration_y', 'acceleration_z']
+
+        if args['eos'] == 'adiabatic':
+            pressField = 'pressure'
+
+        order = 'C'
+
+        readAllFieldsWithHDF(fields,args['data_path'], args['res'],
+                             rhoField, velFields, magFields,
+                             accFields, pressField,order)
+
+    elif args['data_type'] == 'AthenaPK':
+        rhoField = ('gas', 'density')
+        velFields = [('gas', 'velocity_x'),
+                     ('gas', 'velocity_y'),
+                     ('gas', 'velocity_z'),]
+        if args['b']:
+            magFields = [('gas', 'magnetic_field_x'),
+                         ('gas', 'magnetic_field_y'),
+                         ('gas', 'magnetic_field_z'),]
+        if args['forced']:
+            # Current AthenaPK/Parthenon output stores the three components of
+            # the acceleration vector with zero-based component labels.
+            accFields = [('parthenon', 'acc_0'),
+                         ('parthenon', 'acc_1'),
+                         ('parthenon', 'acc_2'),]
+
+        if args['eos'] == 'adiabatic':
+            pressField = ('gas', 'pressure')
+
+        readAllFieldsWithYT(fields, args['data_path'], args['res'],
+                            rhoField, velFields, magFields,
+                            accFields, pressField)
+
+    elif args['data_type'] == 'Athena':
+        rhoField = 'density'
+        velFields = ['velocity_x', 'velocity_y', 'velocity_z']
+        if args['b']:
+            magFields = ['cell_centered_B_x', 'cell_centered_B_y', 'cell_centered_B_z']
+        if args['forced']:
+            accFields = ['acceleration_x', 'acceleration_y', 'acceleration_z']
+
+        if args['eos'] == 'adiabatic':
+            pressField = 'pressure'
+
+        readAllFieldsWithYT(fields, args['data_path'], args['res'],
+                            rhoField, velFields, magFields,
+                            accFields, pressField)
+
+    elif args['data_type'] == 'JHTDB':
+        velFields = [(None,'vel_0'), (None,'vel_1'), (None,'vel_2')]
+        if args['b']:
+            magFields = [(None,'B_0'), (None,'B_1'), (None,'B_2')]
+
+        if args['eos'] == 'adiabatic':
+            pressField = (None, 'pressure')
+
+        order = 'C'
+
+        readAllFieldsWithHDF(fields,args['data_path'], args['res'],
+                             rhoField, velFields, magFields,
+                             accFields, pressField,order)
+
+        # allow analysis to run with incompressible data
+        fields['rho'] = np.ones(fields['U'][0].shape,dtype=np.float64)
+
+
+    else:
+        raise SystemExit('Unknown data type: ', data_type)
+
+    time_elapsed = MPI.Wtime() - time_start
+    time_elapsed = comm.gather(time_elapsed)
+
+    if comm.Get_rank() == 0:
+        print("Reading data done in %.3g +/- %.3g" %
+            (np.mean(time_elapsed), np.std(time_elapsed)))
+        sys.stdout.flush()
+
+    if args['eos'] == 'isothermal':
+        fields['P'] = args['cs']**2. * fields['rho']
+
+    return fields
+
+def readAllFieldsWithYT(fields,loadPath,Res,
+    rhoField,velFields,magFields,accFields,pressField=None):
+    """
+    Reads all fields using the yt frontend. Data is read in parallel.
+
+    """
+    pencil_shape = FFTHelperFuncs.local_shape
+    if (np.array(FFTHelperFuncs.global_shape, dtype=int) % pencil_shape != 0).any():
+        raise SystemExit(
+            'Data cannot be split evenly among processes. ' +
+            'Abort (for now) - fix me!')
+
+    ds = yt.load(loadPath)
+    left_edge = ds.domain_left_edge
+    right_edge = ds.domain_right_edge
+
+    n_proc = np.array(FFTHelperFuncs.global_shape, dtype=int) // pencil_shape
+    gid_x_s = rank // n_proc[1] * pencil_shape[0] # global x start index
+    gid_y_s = rank % n_proc[1] * pencil_shape[1] # global y start index
+
+    start_pos = left_edge.copy()
+    start_pos[0] += gid_x_s / Res * (right_edge[0] - left_edge[0])
+    start_pos[1] += gid_y_s / Res * (right_edge[1] - left_edge[1])
+    if rank == 0:
+        print("Loading "+ loadPath)
+        print("Chunk dimensions = ", pencil_shape)
+
+
+    ad = ds.covering_grid(level=0, left_edge=start_pos,dims=FFTHelperFuncs.local_shape)
+
+    if rhoField is not None:
+        fields['rho'] = ad[rhoField].d
+
+    if pressField is not None:
+        fields['P'] = ad[pressField].d
+
+    if velFields is not None:
+        U = np.zeros((3,) + pencil_shape,dtype=np.float64)
+        U[0] = ad[velFields[0]].d
+        U[1] = ad[velFields[1]].d
+        U[2] = ad[velFields[2]].d
+        fields['U'] = U
+
+    if magFields is not None:
+        B = np.zeros((3,) + pencil_shape,dtype=np.float64)
+        B[0] = ad[magFields[0]].d
+        B[1] = ad[magFields[1]].d
+        B[2] = ad[magFields[2]].d
+        fields['B'] = B
+
+    if accFields is not None:
+        Acc = np.zeros((3,) + pencil_shape,dtype=np.float64)
+        Acc[0] = ad[accFields[0]].d
+        Acc[1] = ad[accFields[1]].d
+        Acc[2] = ad[accFields[2]].d
+        fields['Acc'] = Acc
+
+
+def readOneFieldWithHDF(loadPath,FieldName,Res,order,f=None):
+    pencil_shape = FFTHelperFuncs.local_shape
+    n_proc = np.array(FFTHelperFuncs.global_shape, dtype=int) // pencil_shape
+    gid_x_s = rank // n_proc[1] * pencil_shape[0] # global x start index
+    gid_y_s = rank % n_proc[1] * pencil_shape[1] # global y start index
+
+    #print("[%04d] my data is" % rank, gid_x_s, gid_y_s, flush=True)
+
+    if rank == 0:
+        print("pencil_shape",pencil_shape)
+        print("n_proc",n_proc)
+    if order == 'F':
+        Filename = loadPath + '/' + FieldName + '-' + str(Res) + '.hdf5'
+
+        if rank == 0:
+
+            h5Data = h5py.File(Filename, 'r')[FieldName]
+        
+            tmp = np.float64(h5Data[0,:,:,:]).T.reshape((size,int(Res/size),Res,Res))
+
+            data = comm.scatter(tmp)
+
+        else:
+            data = comm.scatter(None)
+
+    elif order == 'C':
+
+# TODO(pgrete): fix this to work with AthenaC data again
+        # stripping the yt field type
+        FieldName = FieldName[1]
+        #time.sleep(np.random.uniform(0,5))
+
+        # load full slab for continguos data
+        if gid_y_s == 0:
+            slab_data = np.float32(np.copy(f[FieldName][gid_x_s:gid_x_s+pencil_shape[0],
+                                     :,
+                                     :]))
+            for i in range(1,n_proc[1]):
+                target_rank = rank+i
+                target_gid_y_s = target_rank % n_proc[1] * pencil_shape[1]
+                data_to_send = np.array(slab_data[:,target_gid_y_s:target_gid_y_s+pencil_shape[1],:],dtype=np.float32)
+                #print("[%04d] sending data to %03d" % (rank ,target_rank),flush=True)
+                comm.send(data_to_send, dest=target_rank, tag=13)
+            data = slab_data[:,gid_y_s:gid_y_s+pencil_shape[1],:]
+        else:
+            #data = numpy.empty(pencil_shape, dtype=numpy.float32)
+            #print("[%04d] waiting for data from %03d" % (rank, rank // n_proc[1]),flush=True)
+            data = comm.recv(source=rank - rank % n_proc[1], tag=13)
+
+        data = np.float64(data)
+
+        #data = np.float64(f[FieldName][gid_x_s:gid_x_s+pencil_shape[0],
+        #                             gid_y_s:gid_y_s+pencil_shape[1],
+        #                             :])
+
+    if rank == 0:
+        print("[%03d] done reading %s" % (rank,FieldName))
+
+    return np.ascontiguousarray(data)
+
+def readOneFieldWithAthenaPPHDF(loadPath,FieldName,Res,order):
+    """
+    reading (K-)Athena++ HDF data dumps
+    """
+
+    # stripping the yt field type
+    FieldName = FieldName[1]
+
+    tmp = np.zeros(FFTHelperFuncs.local_shape, dtype=np.float64)
+    loc_slc = tmp.shape
+
+    n_proc = np.array(FFTHelperFuncs.global_shape, dtype=int) // loc_slc
+
+    if h5py.h5.get_config().mpi:
+        h5py_kwargs = {
+            'driver' : 'mpio',
+            'comm' : comm,
+            }
+        if rank == 0:
+            print("Using HDF5 with MPIIO backend.")
+    else:
+        h5py_kwargs = {}
+        if rank == 0:
+            print("Using HDF5 with serial backend.")
+
+    with h5py.File(loadPath,'r', **h5py_kwargs) as f:
+
+        if rank == 0:
+            mb_size = f.attrs['MeshBlockSize']
+            rg_size = f.attrs['RootGridSize']
+            log_loc_all = np.copy(f['LogicalLocations'])
+        else:
+            mb_size = None
+            rg_size = None
+            log_loc_all = None
+ 
+        mb_size = comm.bcast(mb_size, root=0)
+        rg_size = comm.bcast(rg_size, root=0)
+        log_loc_all = comm.bcast(log_loc_all, root=0)
+
+        if 'rho' == FieldName:
+            field_idx = 0
+            ds_name = 'prim'
+        elif 'press' == FieldName:
+            field_idx = 1
+            ds_name = 'prim'
+        elif 'vel' in FieldName:
+            if eos == 'isothermal':
+                offset = 0
+            elif eos == 'adiabatic':
+                offset = 1
+            else:
+                raise SystemExit('Unknown eos: ', eos)
+            field_idx = offset + int(FieldName[-1])
+            ds_name = 'prim'
+        elif 'Bcc' in FieldName:
+            field_idx = int(FieldName[-1]) - 1
+            ds_name = 'B'
+        elif 'acc' in FieldName:
+            # translate from ..._x, _y, _z to index 0, 1, 2
+            field_idx = ord(FieldName[-1]) - 120
+            ds_name = 'hydro'
+        else:
+            raise SystemExit(
+                'Unknown field: ', FieldName)
+
+
+        if not ((loc_slc[0] % mb_size[0] == 0 or mb_size[0] % loc_slc[0] == 0) and
+                (loc_slc[1] % mb_size[1] == 0 or mb_size[1] % loc_slc[1] == 0)):
+            raise SystemExit(
+                'Error: local data size  ', loc_slc,
+                'cannot be matched to meshblock size of ', mb_size)
+
+        gid_x_s = rank // n_proc[1] * tmp.shape[0] # global x start index
+        gid_x_e = rank // n_proc[1] * tmp.shape[0] + tmp.shape[0] # global x end index
+        gid_y_s = rank % n_proc[1] * tmp.shape[1] # global y start index
+        gid_y_e = rank % n_proc[1] * tmp.shape[1] + tmp.shape[1] # global y end index
+
+#        log_loc_all = np.copy(f['LogicalLocations']) # all logical meshblock locations
+
+        for i, loc in enumerate(log_loc_all):
+            gid_mb = loc * mb_size # index of meshblock
+            # make sure meshblock belong to this MPI proc
+            if not ((gid_mb[0] <= gid_x_s < gid_mb[0] + mb_size[0] or
+                     gid_x_s <= gid_mb[0] < gid_x_e) and
+                    (gid_mb[1] <= gid_y_s < gid_mb[1] + mb_size[1] or
+                     gid_y_s <= gid_mb[1] < gid_y_e)):
+                continue
+
+            try:
+                data = f[ds_name][field_idx,i,:,:,:] # actual meshblock data
+            except KeyError:
+                raise SystemExit(
+                    'Cannot find data in dataset: ', ds_name, field_idx
+                    )
+
+            # if local x pencil dim smaller than a meshblock use entire local pencil
+            if mb_size[0] >= loc_slc[0]:
+                loc_x_s = 0
+                loc_x_e = tmp.shape[0]
+            else:
+                loc_x_s = loc[0]*mb_size[0] - gid_x_s
+                loc_x_e = (loc[0]+1)*mb_size[0] - gid_x_s
+            sl_x = slice(gid_x_s % mb_size[0],gid_x_s % mb_size[0] + tmp.shape[0])
+
+            # if local y pencil dim smaller than a meshblock use entire local pencil
+            if mb_size[1] >= loc_slc[1]:
+                loc_y_s = 0
+                loc_y_e = tmp.shape[1]
+            else:
+                loc_y_s = loc[1]*mb_size[1] - gid_y_s
+                loc_y_e = (loc[1] + 1)*mb_size[1] - gid_y_s
+            sl_y = slice(gid_y_s % mb_size[1],gid_y_s % mb_size[1] + tmp.shape[1])
+
+            tmp[loc_x_s: loc_x_e,
+                loc_y_s: loc_y_e,
+                loc[2]*mb_size[2] : (loc[2] + 1)*mb_size[2]] = data.T[sl_x,sl_y,:]
+
+    return np.ascontiguousarray(np.float64(tmp))
+
+def readAllFieldsWithHDF(fields,loadPath,Res,
+    rhoField,velFields,magFields,accFields,pField,order,use_athena_hdf=False):
+    """
+    Reads all fields using the HDF5. Data is read in parallel.
+
+    """
+
+    FinalShape = FFTHelperFuncs.local_shape
+
+    if order != "C" and order != "F":
+        print("For safety reasons you have to specify the order (row or column major) for your data.")
+        sys.exit(1)
+        
+    if h5py.h5.get_config().mpi and False:
+        h5py_kwargs = {
+            'driver' : 'mpio',
+            'comm' : comm,
+            }
+        if rank == 0:
+            print("Using HDF5 with MPIIO backend.")
+    else:
+        h5py_kwargs = {}
+        if rank == 0:
+            print("Using HDF5 with serial backend.")
+    
+    
+    pencil_shape = FFTHelperFuncs.local_shape
+    n_proc = np.array(FFTHelperFuncs.global_shape, dtype=int) // pencil_shape
+    if 0 == rank % n_proc[1] * pencil_shape[1]: # global y start index
+        f = h5py.File(loadPath,'r', **h5py_kwargs)
+    else:
+        f = None
+
+    if use_athena_hdf:
+        readOneFieldWithX = readOneFieldWithAthenaPPHDF
+    else:
+        readOneFieldWithX = readOneFieldWithHDF
+
+    if rhoField is not None:
+        fields['rho'] = readOneFieldWithX(loadPath,rhoField,Res,order,f)
+
+    if velFields is not None:
+        U = np.zeros((3,) + FinalShape,dtype=np.float64)
+        U[0] = readOneFieldWithX(loadPath,velFields[0],Res,order,f)
+        U[1] = readOneFieldWithX(loadPath,velFields[1],Res,order,f)
+        U[2] = readOneFieldWithX(loadPath,velFields[2],Res,order,f)
+        fields['U'] = U
+
+    if magFields is not None:
+        B = np.zeros((3,) + FinalShape,dtype=np.float64)  
+        B[0] = readOneFieldWithX(loadPath,magFields[0],Res,order,f)
+        B[1] = readOneFieldWithX(loadPath,magFields[1],Res,order,f)
+        B[2] = readOneFieldWithX(loadPath,magFields[2],Res,order,f)
+        fields['B'] = B
+
+    if accFields is not None:
+        Acc = np.zeros((3,) + FinalShape,dtype=np.float64)  
+        Acc[0] = readOneFieldWithX(loadPath,accFields[0],Res,order,f)
+        Acc[1] = readOneFieldWithX(loadPath,accFields[1],Res,order,f)
+        Acc[2] = readOneFieldWithX(loadPath,accFields[2],Res,order,f)
+        fields['Acc'] = Acc
+
+    if pField is not None:
+        fields['P'] = readOneFieldWithX(loadPath,pField,Res,order,f)
+
+    if f is not None:
+        f.close()

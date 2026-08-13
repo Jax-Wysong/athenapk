@@ -23,7 +23,9 @@
 #include "../recon/limo3_simple.hpp"
 #include "../recon/plm_simple.hpp"
 #include "../recon/ppm_simple.hpp"
+#include "../recon/weno3_classic.hpp"
 #include "../recon/weno3_simple.hpp"
+#include "../recon/weno5_classic.hpp"
 #include "../recon/wenoz_simple.hpp"
 #include "../recon/wenoz_point.hpp"
 #include "../refinement/refinement.hpp"
@@ -441,6 +443,12 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
   } else if (recon_str == "weno3") {
     recon = Reconstruction::weno3;
     recon_need_nghost = 2;
+  } else if (recon_str == "weno3js") {
+    recon = Reconstruction::weno3js;
+    recon_need_nghost = 2;
+  } else if (recon_str == "weno5js") {
+    recon = Reconstruction::weno5js;
+    recon_need_nghost = 3;
   } else if (recon_str == "wenoz") {
     recon = Reconstruction::wenoz;
     recon_need_nghost = 3;
@@ -544,6 +552,8 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
   add_flux_fun<Fluid::glmmhd, Reconstruction::plm, RiemannSolver::hlld>(flux_functions);
   add_flux_fun<Fluid::glmmhd, Reconstruction::ppm, RiemannSolver::hlld>(flux_functions);
   add_flux_fun<Fluid::glmmhd, Reconstruction::weno3, RiemannSolver::hlld>(flux_functions);
+  add_flux_fun<Fluid::glmmhd, Reconstruction::weno3js, RiemannSolver::hlld>(flux_functions);
+  add_flux_fun<Fluid::glmmhd, Reconstruction::weno5js, RiemannSolver::hlld>(flux_functions);
   add_flux_fun<Fluid::glmmhd, Reconstruction::limo3, RiemannSolver::hlld>(flux_functions);
   add_flux_fun<Fluid::glmmhd, Reconstruction::wenoz, RiemannSolver::hlld>(flux_functions);
   // (jwysong) only adding 1 ctmhd option for now
