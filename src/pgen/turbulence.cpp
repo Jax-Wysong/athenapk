@@ -39,6 +39,7 @@
 
 namespace turbulence {
 using namespace parthenon::package::prelude;
+using TE = parthenon::TopologicalElement;
 using parthenon::DevMemSpace;
 using parthenon::ParArray2D;
 using utils::few_modes_ft::Complex;
@@ -46,16 +47,22 @@ using utils::few_modes_ft::FewModesFT;
 
 // TODO(?) until we are able to process multiple variables in a single hst function call
 // we'll use this enum to identify the various vars.
-enum class HstQuan { Ms, Ma, pb, temperature };
+enum class HstQuan { Ms, Ma, pb, mean_Ekin, mean_Emag, temperature };
 
 // Compute the local sum of either the sonic Mach number,
-// alfvenic Mach number, or plasma beta as specified by `hst_quan`.
+// alfvenic Mach number, plasma beta, or an energy density as specified by
+// `hst_quan`.
 template <HstQuan hst_quan>
 Real TurbulenceHst(MeshData<Real> *md) {
   auto pmb = md->GetBlockData(0)->GetBlockPointer();
   auto hydro_pkg = pmb->packages.Get("Hydro");
   const auto gamma = hydro_pkg->Param<Real>("AdiabaticIndex");
   const auto fluid = hydro_pkg->Param<Fluid>("fluid");
+  const auto &mesh_size = pmb->pmy_mesh->mesh_size;
+  const auto volume = (mesh_size.xmax(X1DIR) - mesh_size.xmin(X1DIR)) *
+                      (mesh_size.xmax(X2DIR) - mesh_size.xmin(X2DIR)) *
+                      (mesh_size.xmax(X3DIR) - mesh_size.xmin(X3DIR));
+  const auto inv_volume = 1.0 / volume;
 
   const auto &prim_pack = md->PackVariables(std::vector<std::string>{"prim"});
   MeshBlockPack<VariablePack<Real>> temp_pack;
@@ -91,9 +98,13 @@ Real TurbulenceHst(MeshData<Real> *md) {
 
         if (hst_quan == HstQuan::Ms) { // Ms
           lsum += Kokkos::sqrt(vel2) / c_s * coords.CellVolume(k, j, i);
+        } else if (hst_quan == HstQuan::mean_Ekin) {
+          lsum += e_kin * coords.CellVolume(k, j, i) * inv_volume;
         }
 
-        if (fluid == Fluid::glmmhd) {
+        const bool mhd = fluid == Fluid::glmmhd || fluid == Fluid::ctmhd ||
+                         fluid == Fluid::ucthlldmhd;
+        if (mhd) {
           const auto B2 = (prim(IB1, k, j, i) * prim(IB1, k, j, i) +
                            prim(IB2, k, j, i) * prim(IB2, k, j, i) +
                            prim(IB3, k, j, i) * prim(IB3, k, j, i));
@@ -104,6 +115,8 @@ Real TurbulenceHst(MeshData<Real> *md) {
             lsum += Kokkos::sqrt(e_kin / e_mag) * coords.CellVolume(k, j, i);
           } else if (hst_quan == HstQuan::pb) { // plasma beta
             lsum += prim(IPR, k, j, i) / e_mag * coords.CellVolume(k, j, i);
+          } else if (hst_quan == HstQuan::mean_Emag) {
+            lsum += e_mag * coords.CellVolume(k, j, i) * inv_volume;
           }
         }
       },
@@ -116,14 +129,22 @@ void ProblemInitPackageData(ParameterInput *pin, parthenon::StateDescriptor *pkg
   // Step 1. Enlist history output information
   auto hst_vars = pkg->Param<parthenon::HstVar_list>(parthenon::hist_param_key);
   const auto fluid = pkg->Param<Fluid>("fluid");
+  const bool mhd = fluid == Fluid::glmmhd || fluid == Fluid::ctmhd ||
+                   fluid == Fluid::ucthlldmhd;
 
   hst_vars.emplace_back(parthenon::HistoryOutputVar(parthenon::UserHistoryOperation::sum,
                                                     TurbulenceHst<HstQuan::Ms>, "Ms"));
-  if (fluid == Fluid::glmmhd) {
+  hst_vars.emplace_back(parthenon::HistoryOutputVar(
+      parthenon::UserHistoryOperation::sum, TurbulenceHst<HstQuan::mean_Ekin>,
+      "mean_Ekin"));
+  if (mhd) {
     hst_vars.emplace_back(parthenon::HistoryOutputVar(
         parthenon::UserHistoryOperation::sum, TurbulenceHst<HstQuan::Ma>, "Ma"));
     hst_vars.emplace_back(parthenon::HistoryOutputVar(
         parthenon::UserHistoryOperation::sum, TurbulenceHst<HstQuan::pb>, "plasma_beta"));
+    hst_vars.emplace_back(parthenon::HistoryOutputVar(
+        parthenon::UserHistoryOperation::sum, TurbulenceHst<HstQuan::mean_Emag>,
+        "mean_Emag"));
   }
   pkg->UpdateParam(parthenon::hist_param_key, hst_vars);
 
@@ -403,6 +424,9 @@ void ProblemGenerator(Mesh *pmesh, ParameterInput *pin, MeshData<Real> *md) {
 
   auto hydro_pkg = pmb->packages.Get("Hydro");
   const auto fluid = hydro_pkg->Param<Fluid>("fluid");
+  const bool glmmhd = fluid == Fluid::glmmhd;
+  const bool ct = fluid == Fluid::ctmhd || fluid == Fluid::ucthlldmhd;
+  const bool mhd = glmmhd || ct;
   const auto gm1 = pin->GetReal("hydro", "gamma") - 1.0;
   const auto p0 = pin->GetReal("problem/turbulence", "p0");
   const auto rho0 = pin->GetReal("problem/turbulence", "rho0");
@@ -417,17 +441,20 @@ void ProblemGenerator(Mesh *pmesh, ParameterInput *pin, MeshData<Real> *md) {
   const auto num_blocks = md->NumBlocks();
 
   // First initialize B field as we need to normalize it
-  Real b_norm = 0.0;
-  if (fluid == Fluid::glmmhd) {
+  Real b_norm = 1.0;
+  Real b0 = 0.0;
+  int b_config = 0;
+  if (mhd) {
+    b0 = pin->GetReal("problem/turbulence", "b0");
+    b_config = pin->GetInteger("problem/turbulence", "b_config");
+    PARTHENON_REQUIRE_THROWS(b_config != 3, "Random B fields not implemented yet.")
+  }
+
+  if (glmmhd) {
     parthenon::ParArray5D<Real> a("vector potential", num_blocks, 3,
                                   pmb->cellbounds.ncellsk(IndexDomain::entire),
                                   pmb->cellbounds.ncellsj(IndexDomain::entire),
                                   pmb->cellbounds.ncellsi(IndexDomain::entire));
-
-    const auto b0 = pin->GetReal("problem/turbulence", "b0");
-    const auto b_config = pin->GetInteger("problem/turbulence", "b_config");
-
-    PARTHENON_REQUIRE_THROWS(b_config != 3, "Random B fields not implemented yet.")
 
     if (b_config == 4) { // field loop
       // the origin of the initial loop
@@ -499,6 +526,43 @@ void ProblemGenerator(Mesh *pmesh, ParameterInput *pin, MeshData<Real> *md) {
       std::cout << "Applying norm factor of " << b_norm << " to B field."
                 << " Orig mean E_mag = " << (mag_en_sum / (Lx * Ly * Lz)) << std::endl;
     }
+  } else if (ct) {
+    PARTHENON_REQUIRE_THROWS(
+        b_config == 0 || b_config == 2,
+        "UCT/CT turbulence initialization currently supports only b_config=0 or 2.")
+
+    auto Bface_pack = md->PackVariables(std::vector<std::string>{"Bface"});
+    pmb->par_for(
+        "Init turbulence B1 faces", 0, num_blocks - 1, kb.s, kb.e, jb.s,
+        jb.e, ib.s, ib.e + 1,
+        KOKKOS_LAMBDA(const int b, const int k, const int j, const int i) {
+          const auto &coords = Bface_pack.GetCoords(b);
+          Real b1_face = b0;
+          if (b_config == 2) {
+            // B1 = Bamp sin(kz z), Bamp = sqrt(2) b0. Because an x1 face
+            // spans x3, store its exact face-area average rather than the
+            // point value at the face center. This is also the discrete curl
+            // of Ay = Bamp cos(kz z) / kz.
+            const Real dz = coords.Dxc<3>(k);
+            const Real half_kdz = 0.5 * kz * dz;
+            const Real sinc = Kokkos::sin(half_kdz) / half_kdz;
+            const Real b_amp = b0 / Kokkos::sqrt(0.5);
+            b1_face = b_amp * Kokkos::sin(kz * coords.Xc<3>(k)) * sinc;
+          }
+          Bface_pack(b)(TE::F1, 0, k, j, i) = b1_face;
+        });
+    pmb->par_for(
+        "Init uniform turbulence B2 faces", 0, num_blocks - 1, kb.s, kb.e, jb.s,
+        jb.e + 1, ib.s, ib.e,
+        KOKKOS_LAMBDA(const int b, const int k, const int j, const int i) {
+          Bface_pack(b)(TE::F2, 0, k, j, i) = 0.0;
+        });
+    pmb->par_for(
+        "Init uniform turbulence B3 faces", 0, num_blocks - 1, kb.s, kb.e + 1,
+        jb.s, jb.e, ib.s, ib.e,
+        KOKKOS_LAMBDA(const int b, const int k, const int j, const int i) {
+          Bface_pack(b)(TE::F3, 0, k, j, i) = 0.0;
+        });
   }
 
   const auto init_vel =
@@ -521,13 +585,43 @@ void ProblemGenerator(Mesh *pmesh, ParameterInput *pin, MeshData<Real> *md) {
 
         u(IEN, k, j, i) = p0 / gm1 + 0.5 * rho0 * (SQR(v1) + SQR(v2) + SQR(v3));
 
-        if (fluid == Fluid::glmmhd) {
+        if (glmmhd) {
           u(IB1, k, j, i) /= b_norm;
           u(IB2, k, j, i) /= b_norm;
           u(IB3, k, j, i) /= b_norm;
 
           u(IEN, k, j, i) +=
               0.5 * (SQR(u(IB1, k, j, i)) + SQR(u(IB2, k, j, i)) + SQR(u(IB3, k, j, i)));
+        } else if (ct) {
+          const auto &coords = cons.GetCoords(b);
+          Real b1_cell = b0;
+          Real b2_cell_average = b0 * b0;
+
+          if (b_config == 2) {
+            const Real dz = coords.Dxc<3>(k);
+            const Real kdz = kz * dz;
+            const Real half_kdz = 0.5 * kdz;
+            const Real sinc = Kokkos::sin(half_kdz) / half_kdz;
+            const Real b_amp = b0 / Kokkos::sqrt(0.5);
+            const Real zc = coords.Xc<3>(k);
+
+            // For this field, the two x1 faces bounding a cell have the same
+            // value, so this is both the face-area average initialized above
+            // and the cell-centered value produced by center_Mag_Field().
+            b1_cell = b_amp * Kokkos::sin(kz * zc) * sinc;
+
+            // Exact volume average of B1^2 over this cell. This is not, in
+            // general, equal to the square of the volume-averaged B1.
+            b2_cell_average =
+                SQR(b_amp) *
+                (0.5 - Kokkos::cos(2.0 * kz * zc) * Kokkos::sin(kdz) /
+                           (2.0 * kdz));
+          }
+
+          u(IB1, k, j, i) = b1_cell;
+          u(IB2, k, j, i) = 0.0;
+          u(IB3, k, j, i) = 0.0;
+          u(IEN, k, j, i) += 0.5 * b2_cell_average;
         }
       });
 }
@@ -940,7 +1034,9 @@ TaskStatus ProblemFillTracers(MeshData<Real> *md, const parthenon::SimTime &tm,
   const auto current_cycle = tm.ncycle;
 
   auto hydro_pkg = md->GetParentPointer()->packages.Get("Hydro");
-  const auto mhd = hydro_pkg->Param<Fluid>("fluid") == Fluid::glmmhd;
+  const auto fluid = hydro_pkg->Param<Fluid>("fluid");
+  const auto mhd = fluid == Fluid::glmmhd || fluid == Fluid::ctmhd ||
+                   fluid == Fluid::ucthlldmhd;
 
   auto tracers_pkg = md->GetParentPointer()->packages.Get("tracers");
 

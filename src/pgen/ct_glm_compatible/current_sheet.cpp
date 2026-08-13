@@ -11,6 +11,10 @@
 //! https://www.astro.princeton.edu/~jstone/Athena/tests/current-sheet/current-sheet.html
 //========================================================================================
 
+// C++ headers
+#include <array>
+#include <cmath>
+
 // Parthenon headers
 #include "mesh/mesh.hpp"
 #include <parthenon/driver.hpp>
@@ -18,6 +22,7 @@
 
 // AthenaPK headers
 #include "../../main.hpp"
+#include "mhd_pgen_utils.hpp"
 
 namespace current_sheet {
 using namespace parthenon::driver::prelude;
@@ -48,45 +53,96 @@ void ProblemGenerator(MeshBlock *pmb, ParameterInput *pin) {
 
   auto &coords = pmb->coords;
   const auto fluid = pmb->packages.Get("Hydro")->Param<Fluid>("fluid");
+  const bool fourth_order_init =
+      mhd_pgen_utils::UseFourthOrderFVInitialization(pmb);
 
-
-  if (fluid == Fluid::ctmhd || fluid == Fluid::ucthlldmhd){
-    // fills u_cons() with the cell-averaged b values from
-    // the face centered values made via the discrete
-    // curl of the vector potential
-    // Also deep copy the Bface vector for later evolution
+  if (fourth_order_init) {
     auto &u_dev_face = rc->Get("Bface").data;
     auto Bface = u_dev_face.GetHostMirrorAndCopy();
 
-    Bface_Fill_Cons(pmb, u, Bface); 
-    u_dev_face.DeepCopy(Bface);
-  }
+    const auto evaluate_point_conserved =
+        [=](const Real x1, const Real x2, const Real /*x3*/) {
+          std::array<Real, IB3 + 1> u_point{};
 
-  for (int k = kb.s; k <= kb.e; k++) {
-    for (int j = jb.s; j <= jb.e; j++) {
-      for (int i = ib.s; i <= ib.e; i++) {
-        u(IDN, k, j, i) = d0;
-        u(IM1, k, j, i) = d0 * A * std::sin(2.0 * M_PI * coords.Xc<2>(j));
-        u(IM2, k, j, i) = 0.0;
-        u(IM3, k, j, i) = 0.0;
+          u_point[IDN] = d0;
+          u_point[IM1] = d0 * A * std::sin(2.0 * M_PI * x2);
+          u_point[IM2] = 0.0;
+          u_point[IM3] = 0.0;
+          u_point[IB1] = 0.0;
+          u_point[IB2] = (x1 > 0.25 || x1 < -0.25) ? 1.0 : -1.0;
+          u_point[IB3] = 0.0;
+          u_point[IEN] =
+              p0 / gm1 +
+              0.5 * (SQR(u_point[IB1]) + SQR(u_point[IB2]) +
+                     SQR(u_point[IB3])) +
+              0.5 * (SQR(u_point[IM1]) + SQR(u_point[IM2]) +
+                     SQR(u_point[IM3])) /
+                  u_point[IDN];
 
-        if (fluid == Fluid::glmmhd){
-          u(IB1, k, j, i) = 0.0; 
-          if (coords.Xc<1>(i) > 0.25 || coords.Xc<1>(i) < -0.25){
-            u(IB2, k, j, i) = 1.0;
+          return u_point;
+        };
+
+    const auto evaluate_vector_potential =
+        [](const Real x1, const Real /*x2*/, const Real /*x3*/) {
+          Real az;
+          if (x1 < -0.25) {
+            az = -x1 - 0.5;
+          } else if (x1 <= 0.25) {
+            az = x1;
           } else {
-            u(IB2, k, j, i) = -1.0;
+            az = -x1 + 0.5;
           }
-          u(IB3, k, j, i) = 0.0;
-          u(IPS, k, j, i) = 0.0;
+          return std::array<Real, 3>{0.0, 0.0, az};
+        };
+
+    // The hydro conserved quantities are smooth even across the magnetic reversal
+    // because |B| is constant. Construct their volume averages before replacing the
+    // magnetic slots with the divergence-free, face-averaged CT representation.
+    mhd_pgen_utils::PointConservedToCellAverage(
+        pmb, u, evaluate_point_conserved);
+    mhd_pgen_utils::VectorPotentialToFaceAverage(
+        pmb, u, Bface, evaluate_vector_potential, true);
+
+    u_dev_face.DeepCopy(Bface);
+  } else {
+    if (fluid == Fluid::ctmhd || fluid == Fluid::ucthlldmhd){
+      // fills u_cons() with the cell-averaged b values from
+      // the face centered values made via the discrete
+      // curl of the vector potential
+      // Also deep copy the Bface vector for later evolution
+      auto &u_dev_face = rc->Get("Bface").data;
+      auto Bface = u_dev_face.GetHostMirrorAndCopy();
+
+      Bface_Fill_Cons(pmb, u, Bface);
+      u_dev_face.DeepCopy(Bface);
+    }
+
+    for (int k = kb.s; k <= kb.e; k++) {
+      for (int j = jb.s; j <= jb.e; j++) {
+        for (int i = ib.s; i <= ib.e; i++) {
+          u(IDN, k, j, i) = d0;
+          u(IM1, k, j, i) = d0 * A * std::sin(2.0 * M_PI * coords.Xc<2>(j));
+          u(IM2, k, j, i) = 0.0;
+          u(IM3, k, j, i) = 0.0;
+
+          if (fluid == Fluid::glmmhd){
+            u(IB1, k, j, i) = 0.0;
+            if (coords.Xc<1>(i) > 0.25 || coords.Xc<1>(i) < -0.25){
+              u(IB2, k, j, i) = 1.0;
+            } else {
+              u(IB2, k, j, i) = -1.0;
+            }
+            u(IB3, k, j, i) = 0.0;
+            u(IPS, k, j, i) = 0.0;
+          }
+
+          // this should fill correctly since ct/glm path is filled before loop
+          u(IEN, k, j, i) =
+              p0 / gm1 +
+              0.5 * (SQR(u(IB1, k, j, i)) + SQR(u(IB2, k, j, i)) + SQR(u(IB3, k, j, i)) +
+                     (SQR(u(IM1, k, j, i)) + SQR(u(IM2, k, j, i)) + SQR(u(IM3, k, j, i))) /
+                         u(IDN, k, j, i));
         }
-        
-        // this should fill correctly since ct/glm path is filled before loop
-        u(IEN, k, j, i) =
-            p0 / gm1 +
-            0.5 * (SQR(u(IB1, k, j, i)) + SQR(u(IB2, k, j, i)) + SQR(u(IB3, k, j, i)) +
-                   (SQR(u(IM1, k, j, i)) + SQR(u(IM2, k, j, i)) + SQR(u(IM3, k, j, i))) /
-                       u(IDN, k, j, i));
       }
     }
   }

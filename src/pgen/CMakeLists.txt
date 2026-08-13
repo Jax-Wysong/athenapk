@@ -17,9 +17,11 @@ target_sources(athenaPK PRIVATE
     ct_glm_compatible/current_sheet.cpp
     ct_glm_compatible/field_loop.cpp
     ct_glm_compatible/linear_wave_mhd.cpp
+    ct_glm_compatible/mhd_blast.cpp
     ct_glm_compatible/orszag_tang.cpp
     ct_glm_compatible/smooth_mhd_vortex.cpp
     ct_glm_compatible/cpaw.cpp
+    ct_glm_compatible/mhd_cloudShock.cpp
     diffusion.cpp
     kh.cpp
     linear_wave.cpp

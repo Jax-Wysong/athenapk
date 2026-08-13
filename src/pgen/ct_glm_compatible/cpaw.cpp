@@ -33,6 +33,7 @@
 
 // Athena headers
 #include "../../main.hpp"
+#include "mhd_pgen_utils.hpp"
 
 namespace cpaw {
 using namespace parthenon::driver::prelude;
@@ -51,6 +52,10 @@ Real lambda, k_par; // Wavelength, 2*PI/wavelength
 Real A1(const Real x1, const Real x2, const Real x3);
 Real A2(const Real x1, const Real x2, const Real x3);
 Real A3(const Real x1, const Real x2, const Real x3);
+std::array<Real, IB3 + 1> EvaluatePointConserved(const Real x1, const Real x2,
+                                                 const Real x3);
+std::array<Real, 3> EvaluateVectorPotential(const Real x1, const Real x2,
+                                            const Real x3);
 template <typename ConsHost, typename BfaceHost>
 void Bface_Fill_Cons(MeshBlock *pmb, ConsHost &u, BfaceHost &Bface);
 
@@ -145,7 +150,10 @@ void UserWorkAfterLoop(Mesh *mesh, ParameterInput *pin, parthenon::SimTime &tm) 
     err[i] = 0.0;
 
   for (auto &pmb : mesh->block_list) {
-    const auto fluid = pmb->packages.Get("Hydro")->Param<Fluid>("fluid");
+    const auto hydro_pkg = pmb->packages.Get("Hydro");
+    const auto fluid = hydro_pkg->Param<Fluid>("fluid");
+    const bool fourth_order_init =
+        mhd_pgen_utils::UseFourthOrderFVInitialization(pmb.get());
 
     //  Compute errors
     IndexRange ib = pmb->cellbounds.GetBoundsI(IndexDomain::interior);
@@ -156,52 +164,67 @@ void UserWorkAfterLoop(Mesh *mesh, ParameterInput *pin, parthenon::SimTime &tm) 
     Kokkos::View<Real ****, parthenon::LayoutWrapper, parthenon::HostMemSpace> u_ref(
         "cons scratch", NMHD, pmb->cellbounds.ncellsk(IndexDomain::entire),
         pmb->cellbounds.ncellsj(IndexDomain::entire),
-        pmb->cellbounds.ncellsi(IndexDomain::entire));    
+        pmb->cellbounds.ncellsi(IndexDomain::entire));
 
-    for (int k = kb.s; k <= kb.e; k++) {
-      for (int j = jb.s; j <= jb.e; j++) {
-        for (int i = ib.s; i <= ib.e; i++) {
-          Real x =
-              cos_a2 * (pmb->coords.Xc<1>(i) * cos_a3 + pmb->coords.Xc<2>(j) * sin_a3) +
-              pmb->coords.Xc<3>(k) * sin_a2;
-          Real sn = std::sin(k_par * x);
-          Real cs = fac * std::cos(k_par * x);
+    auto &rc = pmb->meshblock_data.Get(); // get base container
+    if (fourth_order_init) {
+      auto &u_dev_face = rc->Get("Bface").data;
+      auto Bface_ref = u_dev_face.GetHostMirrorAndCopy();
+      mhd_pgen_utils::InitializeFourthOrderSmoothMHD(
+          pmb.get(), u_ref, Bface_ref, EvaluatePointConserved,
+          EvaluateVectorPotential, true);
+    } else {
+      for (int k = kb.s; k <= kb.e; k++) {
+        for (int j = jb.s; j <= jb.e; j++) {
+          for (int i = ib.s; i <= ib.e; i++) {
+            Real x = cos_a2 * (pmb->coords.Xc<1>(i) * cos_a3 +
+                               pmb->coords.Xc<2>(j) * sin_a3) +
+                     pmb->coords.Xc<3>(k) * sin_a2;
+            Real sn = std::sin(k_par * x);
+            Real cs = fac * std::cos(k_par * x);
 
-          u_ref(IDN, k, j, i) = den;
+            u_ref(IDN, k, j, i) = den;
 
-          Real mx = den * v_par;
-          Real my = -fac * den * v_perp * sn;
-          Real mz = -fac * den * v_perp * cs;
-          Real m1 = mx * cos_a2 * cos_a3 - my * sin_a3 - mz * sin_a2 * cos_a3;
-          Real m2 = mx * cos_a2 * sin_a3 + my * cos_a3 - mz * sin_a2 * sin_a3;
-          Real m3 = mx * sin_a2 + mz * cos_a2;
-          u_ref(IM1, k, j, i) = m1;
-          u_ref(IM2, k, j, i) = m2;
-          u_ref(IM3, k, j, i) = m3;
+            Real mx = den * v_par;
+            Real my = -fac * den * v_perp * sn;
+            Real mz = -fac * den * v_perp * cs;
+            Real m1 =
+                mx * cos_a2 * cos_a3 - my * sin_a3 - mz * sin_a2 * cos_a3;
+            Real m2 =
+                mx * cos_a2 * sin_a3 + my * cos_a3 - mz * sin_a2 * sin_a3;
+            Real m3 = mx * sin_a2 + mz * cos_a2;
+            u_ref(IM1, k, j, i) = m1;
+            u_ref(IM2, k, j, i) = m2;
+            u_ref(IM3, k, j, i) = m3;
 
-          Real bx = b_par;
-          Real by = b_perp * sn;
-          Real bz = b_perp * cs;
-          Real b1 = bx * cos_a2 * cos_a3 - by * sin_a3 - bz * sin_a2 * cos_a3;
-          Real b2 = bx * cos_a2 * sin_a3 + by * cos_a3 - bz * sin_a2 * sin_a3;
-          Real b3 = bx * sin_a2 + bz * cos_a2;
-          u_ref(IB1, k, j, i) = b1;
-          u_ref(IB2, k, j, i) = b2;
-          u_ref(IB3, k, j, i) = b3;
+            Real bx = b_par;
+            Real by = b_perp * sn;
+            Real bz = b_perp * cs;
+            Real b1 =
+                bx * cos_a2 * cos_a3 - by * sin_a3 - bz * sin_a2 * cos_a3;
+            Real b2 =
+                bx * cos_a2 * sin_a3 + by * cos_a3 - bz * sin_a2 * sin_a3;
+            Real b3 = bx * sin_a2 + bz * cos_a2;
+            u_ref(IB1, k, j, i) = b1;
+            u_ref(IB2, k, j, i) = b2;
+            u_ref(IB3, k, j, i) = b3;
 
-          Real e0 = pres / gm1 + 0.5 * (m1 * m1 + m2 * m2 + m3 * m3) / den +
-                    0.5 * (b1 * b1 + b2 * b2 + b3 * b3);
-          u_ref(IEN, k, j, i) = e0;
+            Real e0 =
+                pres / gm1 +
+                0.5 * (m1 * m1 + m2 * m2 + m3 * m3) / den +
+                0.5 * (b1 * b1 + b2 * b2 + b3 * b3);
+            u_ref(IEN, k, j, i) = e0;
+          }
         }
       }
     }
   
-    auto &rc = pmb->meshblock_data.Get(); // get base container
     // for ctmhd, fill up IB1:IB3 with the proper cell-center derived values
-    if (fluid == Fluid::ctmhd || fluid == Fluid::ucthlldmhd){
+    if (!fourth_order_init &&
+        (fluid == Fluid::ctmhd || fluid == Fluid::ucthlldmhd)) {
       auto &u_dev_face = rc->Get("Bface").data;
       auto Bface = u_dev_face.GetHostMirrorAndCopy();
-      Bface_Fill_Cons(pmb.get(), u_ref, Bface); // dont do the deep copy   
+      Bface_Fill_Cons(pmb.get(), u_ref, Bface); // dont do the deep copy
       for (int k = kb.s; k <= kb.e; k++) {
         for (int j = jb.s; j <= jb.e; j++) {
           for (int i = ib.s; i <= ib.e; i++) {
@@ -209,8 +232,10 @@ void UserWorkAfterLoop(Mesh *mesh, ParameterInput *pin, parthenon::SimTime &tm) 
             Real m2 = u_ref(IM2, k, j, i);
             Real m3 = u_ref(IM3, k, j, i);
             u_ref(IEN, k, j, i) =
-                pres / gm1 + 0.5 * (m1 * m1 + m2 * m2 + m3 * m3) / den +
-                0.5 * (SQR(u_ref(IB1, k, j, i)) + SQR(u_ref(IB2, k, j, i)) +
+                pres / gm1 +
+                0.5 * (m1 * m1 + m2 * m2 + m3 * m3) / den +
+                0.5 * (SQR(u_ref(IB1, k, j, i)) +
+                       SQR(u_ref(IB2, k, j, i)) +
                        SQR(u_ref(IB3, k, j, i)));
           }
         }
@@ -319,7 +344,11 @@ void UserWorkAfterLoop(Mesh *mesh, ParameterInput *pin, parthenon::SimTime &tm) 
 //========================================================================================
 
 void ProblemGenerator(MeshBlock *pmb, ParameterInput * /*pin*/) {
-  const auto fluid = pmb->packages.Get("Hydro")->Param<Fluid>("fluid");
+
+  const auto hydro_pkg = pmb->packages.Get("Hydro");
+  const auto fluid = hydro_pkg->Param<Fluid>("fluid");
+  const bool fourth_order_init =
+      mhd_pgen_utils::UseFourthOrderFVInitialization(pmb);
 
   const bool two_d = pmb->pmy_mesh->ndim < 3;
 
@@ -380,59 +409,123 @@ void ProblemGenerator(MeshBlock *pmb, ParameterInput * /*pin*/) {
     auto &u_dev_face = rc->Get("Bface").data;
     auto Bface = u_dev_face.GetHostMirrorAndCopy();
 
-    Bface_Fill_Cons(pmb, u, Bface); 
+    if (fourth_order_init) {
+      mhd_pgen_utils::InitializeFourthOrderSmoothMHD(
+          pmb, u, Bface, EvaluatePointConserved, EvaluateVectorPotential, true);
+    } else {
+      Bface_Fill_Cons(pmb, u, Bface);
+    }
     u_dev_face.DeepCopy(Bface);
   }
-  for (int k = kb.s; k <= kb.e; k++) {
-    for (int j = jb.s; j <= jb.e; j++) {
-      for (int i = ib.s; i <= ib.e; i++) {
-        Real x = cos_a2 * (coords.Xc<1>(i) * cos_a3 + coords.Xc<2>(j) * sin_a3) +
-                 coords.Xc<3>(k) * sin_a2;
-        Real sn = std::sin(k_par * x);
-        Real cs = fac * std::cos(k_par * x);
+  if (!fourth_order_init) {
+    for (int k = kb.s; k <= kb.e; k++) {
+      for (int j = jb.s; j <= jb.e; j++) {
+        for (int i = ib.s; i <= ib.e; i++) {
+          Real x =
+              cos_a2 * (coords.Xc<1>(i) * cos_a3 + coords.Xc<2>(j) * sin_a3) +
+              coords.Xc<3>(k) * sin_a2;
+          Real sn = std::sin(k_par * x);
+          Real cs = fac * std::cos(k_par * x);
 
-        u(IDN, k, j, i) = den;
+          u(IDN, k, j, i) = den;
 
-        Real mx = den * v_par;
-        Real my = -fac * den * v_perp * sn;
-        Real mz = -fac * den * v_perp * cs;
+          Real mx = den * v_par;
+          Real my = -fac * den * v_perp * sn;
+          Real mz = -fac * den * v_perp * cs;
 
-        u(IM1, k, j, i) = mx * cos_a2 * cos_a3 - my * sin_a3 - mz * sin_a2 * cos_a3;
-        u(IM2, k, j, i) = mx * cos_a2 * sin_a3 + my * cos_a3 - mz * sin_a2 * sin_a3;
-        u(IM3, k, j, i) = mx * sin_a2 + mz * cos_a2;
-        
-        if (fluid ==Fluid::glmmhd){
-          if (two_d) {
-            u(IB1,k,j,i) =
-                (a3(k,j+1,i) - a3(k,j-1,i)) / coords.Dxc<2>(j) / 2.0;
+          u(IM1, k, j, i) =
+              mx * cos_a2 * cos_a3 - my * sin_a3 - mz * sin_a2 * cos_a3;
+          u(IM2, k, j, i) =
+              mx * cos_a2 * sin_a3 + my * cos_a3 - mz * sin_a2 * sin_a3;
+          u(IM3, k, j, i) = mx * sin_a2 + mz * cos_a2;
 
-            u(IB2,k,j,i) =
-              -(a3(k,j,i+1) - a3(k,j,i-1)) / coords.Dxc<1>(i) / 2.0;
+          if (fluid == Fluid::glmmhd) {
+            if (two_d) {
+              u(IB1, k, j, i) =
+                  (a3(k, j + 1, i) - a3(k, j - 1, i)) / coords.Dxc<2>(j) / 2.0;
 
-            u(IB3,k,j,i) =
-                (a2(k,j,i+1) - a2(k,j,i-1)) / coords.Dxc<1>(i) / 2.0
-              - (a1(k,j+1,i) - a1(k,j-1,i)) / coords.Dxc<2>(j) / 2.0;
-          } else {
-            u(IB1, k, j, i) = (a3(k, j + 1, i) - a3(k, j - 1, i)) / coords.Dxc<2>(j) / 2.0 -
-                              (a2(k + 1, j, i) - a2(k - 1, j, i)) / coords.Dxc<3>(k) / 2.0;
-            u(IB2, k, j, i) = (a1(k + 1, j, i) - a1(k - 1, j, i)) / coords.Dxc<3>(k) / 2.0 -
-                              (a3(k, j, i + 1) - a3(k, j, i - 1)) / coords.Dxc<1>(i) / 2.0;
-            u(IB3, k, j, i) = (a2(k, j, i + 1) - a2(k, j, i - 1)) / coords.Dxc<1>(i) / 2.0 -
-                              (a1(k, j + 1, i) - a1(k, j - 1, i)) / coords.Dxc<2>(j) / 2.0;
+              u(IB2, k, j, i) =
+                  -(a3(k, j, i + 1) - a3(k, j, i - 1)) / coords.Dxc<1>(i) /
+                  2.0;
+
+              u(IB3, k, j, i) =
+                  (a2(k, j, i + 1) - a2(k, j, i - 1)) / coords.Dxc<1>(i) /
+                      2.0 -
+                  (a1(k, j + 1, i) - a1(k, j - 1, i)) / coords.Dxc<2>(j) /
+                      2.0;
+            } else {
+              u(IB1, k, j, i) =
+                  (a3(k, j + 1, i) - a3(k, j - 1, i)) / coords.Dxc<2>(j) /
+                      2.0 -
+                  (a2(k + 1, j, i) - a2(k - 1, j, i)) / coords.Dxc<3>(k) /
+                      2.0;
+              u(IB2, k, j, i) =
+                  (a1(k + 1, j, i) - a1(k - 1, j, i)) / coords.Dxc<3>(k) /
+                      2.0 -
+                  (a3(k, j, i + 1) - a3(k, j, i - 1)) / coords.Dxc<1>(i) /
+                      2.0;
+              u(IB3, k, j, i) =
+                  (a2(k, j, i + 1) - a2(k, j, i - 1)) / coords.Dxc<1>(i) /
+                      2.0 -
+                  (a1(k, j + 1, i) - a1(k, j - 1, i)) / coords.Dxc<2>(j) /
+                      2.0;
+            }
+            u(IPS, k, j, i) = 0.0;
           }
-          u(IPS, k, j, i) = 0.0;
-        }
 
-        u(IEN, k, j, i) =
-            pres / gm1 +
-            0.5 * (SQR(u(IB1, k, j, i)) + SQR(u(IB2, k, j, i)) + SQR(u(IB3, k, j, i))) +
-            (0.5 / den) *
-                (SQR(u(IM1, k, j, i)) + SQR(u(IM2, k, j, i)) + SQR(u(IM3, k, j, i)));
+          u(IEN, k, j, i) =
+              pres / gm1 +
+              0.5 * (SQR(u(IB1, k, j, i)) + SQR(u(IB2, k, j, i)) +
+                     SQR(u(IB3, k, j, i))) +
+              (0.5 / den) *
+                  (SQR(u(IM1, k, j, i)) + SQR(u(IM2, k, j, i)) +
+                   SQR(u(IM3, k, j, i)));
+        }
       }
     }
   }
+
   // copy initialized vars to device
   u_dev.DeepCopy(u);
+}
+
+//----------------------------------------------------------------------------------------
+//! \brief Evaluate the complete analytic pointwise CPAW conserved state.
+
+std::array<Real, IB3 + 1> EvaluatePointConserved(const Real x1, const Real x2,
+                                                 const Real x3) {
+  const Real x = cos_a2 * (x1 * cos_a3 + x2 * sin_a3) + x3 * sin_a2;
+  const Real sn = std::sin(k_par * x);
+  const Real cs = fac * std::cos(k_par * x);
+
+  const Real mx = den * v_par;
+  const Real my = -fac * den * v_perp * sn;
+  const Real mz = -fac * den * v_perp * cs;
+
+  const Real bx = b_par;
+  const Real by = b_perp * sn;
+  const Real bz = b_perp * cs;
+
+  std::array<Real, IB3 + 1> u_point{};
+  u_point[IDN] = den;
+  u_point[IM1] =
+      mx * cos_a2 * cos_a3 - my * sin_a3 - mz * sin_a2 * cos_a3;
+  u_point[IM2] =
+      mx * cos_a2 * sin_a3 + my * cos_a3 - mz * sin_a2 * sin_a3;
+  u_point[IM3] = mx * sin_a2 + mz * cos_a2;
+  u_point[IB1] =
+      bx * cos_a2 * cos_a3 - by * sin_a3 - bz * sin_a2 * cos_a3;
+  u_point[IB2] =
+      bx * cos_a2 * sin_a3 + by * cos_a3 - bz * sin_a2 * sin_a3;
+  u_point[IB3] = bx * sin_a2 + bz * cos_a2;
+  u_point[IEN] =
+      pres / gm1 +
+      (0.5 / u_point[IDN]) *
+          (SQR(u_point[IM1]) + SQR(u_point[IM2]) + SQR(u_point[IM3])) +
+      0.5 *
+          (SQR(u_point[IB1]) + SQR(u_point[IB2]) + SQR(u_point[IB3]));
+
+  return u_point;
 }
 
 //----------------------------------------------------------------------------------------
@@ -472,6 +565,14 @@ Real A3(const Real x1, const Real x2, const Real x3) {
   Real Az = (b_perp / k_par) * std::cos(k_par * (x)) + b_par * y;
 
   return Az * cos_a2;
+}
+
+//----------------------------------------------------------------------------------------
+//! \brief Evaluate the complete analytic CPAW vector potential.
+
+std::array<Real, 3> EvaluateVectorPotential(const Real x1, const Real x2,
+                                            const Real x3) {
+  return {A1(x1, x2, x3), A2(x1, x2, x3), A3(x1, x2, x3)};
 }
 
 template <typename ConsHost, typename BfaceHost>
@@ -648,6 +749,8 @@ void Bface_Fill_Cons(MeshBlock *pmb, ConsHost &u, BfaceHost &Bface) {
       }
     }
   }
+  mhd_pgen_utils::ReconcileSelfPeriodicFaces(pmb, Bface);
+
   // now good to fill up the Bx/By cons vector
   for (int k = kb.s; k <= kb.e; k++) {
     for (int j = jb.s; j <= jb.e; j++) { 

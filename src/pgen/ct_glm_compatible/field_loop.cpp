@@ -51,6 +51,7 @@
 
 // Athena headers
 #include "../../main.hpp"
+#include "mhd_pgen_utils.hpp"
 #include "outputs/outputs.hpp"
 
 namespace field_loop {
@@ -59,6 +60,28 @@ using TE = parthenon::TopologicalElement;
 
 template <typename ConsHost, typename BfaceHost>
 void Bface_Fill_Cons(MeshBlock *pmb, ConsHost &u, BfaceHost &Bface, ParameterInput *pin);
+
+struct FieldLoopParameters {
+  Real rad, amp, drat, gm1;
+  Real v1, v2, v3;
+  Real cos_a2, sin_a2, lambda;
+  int iprob;
+};
+
+std::array<Real, 3> EvaluateVectorPotential(const Real x1, const Real x2,
+                                            const Real x3,
+                                            const FieldLoopParameters &params);
+std::array<Real, IB3 + 1> EvaluatePointConserved(
+    const Real x1, const Real x2, const Real x3,
+    const FieldLoopParameters &params);
+
+template <typename ConsHost, typename BfaceHost, typename EdgeHost>
+void CurlEdgePotentialToFaceField(MeshBlock *pmb, ConsHost &u, BfaceHost &Bface,
+                                  EdgeHost &ax, EdgeHost &ay, EdgeHost &az);
+
+template <typename ConsHost, typename BfaceHost>
+void InitializeFourthOrderFieldLoop(MeshBlock *pmb, ConsHost &u, BfaceHost &Bface,
+                                    const FieldLoopParameters &params);
 
 Real B0_ = 0.0;
 
@@ -205,6 +228,253 @@ void ProblemInitPackageData(ParameterInput *pin, parthenon::StateDescriptor *pkg
   } 
 }
 
+//----------------------------------------------------------------------------------------
+//! \brief Evaluate the analytic vector potential for the CT field-loop variants.
+
+std::array<Real, 3> EvaluateVectorPotential(
+    const Real x1, const Real x2, const Real x3,
+    const FieldLoopParameters &params) {
+  if (params.iprob == 1) {
+    const Real r = std::sqrt(x1 * x1 + x2 * x2);
+    const Real potential = r < params.rad ? params.amp * (params.rad - r) : 0.0;
+    return {0.0, 0.0, potential};
+  }
+
+  Real x = x1 * params.cos_a2 + x3 * params.sin_a2;
+  while (x > 0.5 * params.lambda)
+    x -= params.lambda;
+  while (x < -0.5 * params.lambda)
+    x += params.lambda;
+
+  const Real r = std::sqrt(x * x + x2 * x2);
+  const Real potential = r < params.rad ? params.amp * (params.rad - r) : 0.0;
+  return {-params.sin_a2 * potential, 0.0,
+          params.cos_a2 * potential};
+}
+
+//----------------------------------------------------------------------------------------
+//! \brief Evaluate the complete analytic pointwise field-loop conserved state.
+
+std::array<Real, IB3 + 1> EvaluatePointConserved(
+    const Real x1, const Real x2, const Real x3,
+    const FieldLoopParameters &params) {
+  Real bx = 0.0;
+  Real by = 0.0;
+  Real bz = 0.0;
+
+  Real x = x1;
+  if (params.iprob == 4) {
+    x = x1 * params.cos_a2 + x3 * params.sin_a2;
+    while (x > 0.5 * params.lambda)
+      x -= params.lambda;
+    while (x < -0.5 * params.lambda)
+      x += params.lambda;
+  }
+
+  const Real r = std::sqrt(x * x + x2 * x2);
+  if (r > 0.0 && r < params.rad) {
+    const Real bx_rot = -params.amp * x2 / r;
+    by = params.amp * x / r;
+    if (params.iprob == 1) {
+      bx = bx_rot;
+    } else {
+      bx = bx_rot * params.cos_a2;
+      bz = bx_rot * params.sin_a2;
+    }
+  }
+
+  const Real r_density_sq = x1 * x1 + x2 * x2 + x3 * x3;
+  const Real rho = r_density_sq < params.rad * params.rad ? params.drat : 1.0;
+
+  std::array<Real, IB3 + 1> u_point{};
+  u_point[IDN] = rho;
+  u_point[IM1] = rho * params.v1;
+  u_point[IM2] = rho * params.v2;
+  u_point[IM3] = rho * params.v3;
+  u_point[IEN] =
+      1.0 / params.gm1 +
+      0.5 * rho * (params.v1 * params.v1 + params.v2 * params.v2 +
+                   params.v3 * params.v3) +
+      0.5 * (bx * bx + by * by + bz * bz);
+  u_point[IB1] = bx;
+  u_point[IB2] = by;
+  u_point[IB3] = bz;
+  return u_point;
+}
+
+//----------------------------------------------------------------------------------------
+//! \brief Take the discrete curl of line-averaged A and center the resulting B.
+
+template <typename ConsHost, typename BfaceHost, typename EdgeHost>
+void CurlEdgePotentialToFaceField(MeshBlock *pmb, ConsHost &u, BfaceHost &Bface,
+                                  EdgeHost &ax, EdgeHost &ay, EdgeHost &az) {
+  const IndexRange ib = pmb->cellbounds.GetBoundsI(IndexDomain::interior);
+  const IndexRange jb = pmb->cellbounds.GetBoundsJ(IndexDomain::interior);
+  const IndexRange kb = pmb->cellbounds.GetBoundsK(IndexDomain::interior);
+  const bool two_d = pmb->pmy_mesh->ndim < 3;
+  auto &coords = pmb->coords;
+
+  auto Bx_face = Bface.Get(IBF1, 0, 0, 0);
+  auto By_face = Bface.Get(IBF2, 0, 0, 0);
+  auto Bz_face = Bface.Get(IBF3, 0, 0, 0);
+
+  for (int k = kb.s; k <= kb.e; ++k) {
+    for (int j = jb.s; j <= jb.e; ++j) {
+      for (int i = ib.s; i <= ib.e + 1; ++i) {
+        const Real da2_dx3 =
+            two_d ? 0.0 : (ay(k + 1, j, i) - ay(k, j, i)) / coords.Dxc<3>(k);
+        Bx_face(k, j, i) =
+            (az(k, j + 1, i) - az(k, j, i)) / coords.Dxc<2>(j) - da2_dx3;
+      }
+    }
+  }
+
+  for (int k = kb.s; k <= kb.e; ++k) {
+    for (int j = jb.s; j <= jb.e + 1; ++j) {
+      for (int i = ib.s; i <= ib.e; ++i) {
+        const Real da1_dx3 =
+            two_d ? 0.0 : (ax(k + 1, j, i) - ax(k, j, i)) / coords.Dxc<3>(k);
+        By_face(k, j, i) =
+            da1_dx3 - (az(k, j, i + 1) - az(k, j, i)) / coords.Dxc<1>(i);
+      }
+    }
+  }
+
+  const int ku = two_d ? kb.e : kb.e + 1;
+  for (int k = kb.s; k <= ku; ++k) {
+    for (int j = jb.s; j <= jb.e; ++j) {
+      for (int i = ib.s; i <= ib.e; ++i) {
+        Bz_face(k, j, i) =
+            two_d ? 0.0
+                  : (ay(k, j, i + 1) - ay(k, j, i)) / coords.Dxc<1>(i) -
+                        (ax(k, j + 1, i) - ax(k, j, i)) / coords.Dxc<2>(j);
+      }
+    }
+  }
+
+  mhd_pgen_utils::ReconcileSelfPeriodicFaces(pmb, Bface);
+
+  for (int k = kb.s; k <= kb.e; ++k) {
+    for (int j = jb.s; j <= jb.e; ++j) {
+      for (int i = ib.s; i <= ib.e; ++i) {
+        u(IB1, k, j, i) =
+            0.5 * (Bx_face(k, j, i) + Bx_face(k, j, i + 1));
+        u(IB2, k, j, i) =
+            0.5 * (By_face(k, j, i) + By_face(k, j + 1, i));
+        u(IB3, k, j, i) =
+            two_d ? 0.0
+                  : 0.5 * (Bz_face(k, j, i) + Bz_face(k + 1, j, i));
+      }
+    }
+  }
+}
+
+//----------------------------------------------------------------------------------------
+//! \brief Initialize the nonsmooth field loop with fourth-order Gaussian quadrature.
+
+template <typename ConsHost, typename BfaceHost>
+void InitializeFourthOrderFieldLoop(MeshBlock *pmb, ConsHost &u, BfaceHost &Bface,
+                                    const FieldLoopParameters &params) {
+  const IndexRange ib = pmb->cellbounds.GetBoundsI(IndexDomain::interior);
+  const IndexRange jb = pmb->cellbounds.GetBoundsJ(IndexDomain::interior);
+  const IndexRange kb = pmb->cellbounds.GetBoundsK(IndexDomain::interior);
+  const bool two_d = pmb->pmy_mesh->ndim < 3;
+  auto &coords = pmb->coords;
+
+  Kokkos::View<Real ***, parthenon::LayoutWrapper, parthenon::HostMemSpace> ax(
+      "field loop line-averaged A1", pmb->cellbounds.ncellsk(IndexDomain::entire),
+      pmb->cellbounds.ncellsj(IndexDomain::entire),
+      pmb->cellbounds.ncellsi(IndexDomain::entire));
+  Kokkos::View<Real ***, parthenon::LayoutWrapper, parthenon::HostMemSpace> ay(
+      "field loop line-averaged A2", pmb->cellbounds.ncellsk(IndexDomain::entire),
+      pmb->cellbounds.ncellsj(IndexDomain::entire),
+      pmb->cellbounds.ncellsi(IndexDomain::entire));
+  Kokkos::View<Real ***, parthenon::LayoutWrapper, parthenon::HostMemSpace> az(
+      "field loop line-averaged A3", pmb->cellbounds.ncellsk(IndexDomain::entire),
+      pmb->cellbounds.ncellsj(IndexDomain::entire),
+      pmb->cellbounds.ncellsi(IndexDomain::entire));
+
+  const Real gauss_offset = 0.5 / std::sqrt(3.0);
+  const int kl = two_d ? kb.s : kb.s - 1;
+  const int ku = two_d ? kb.e : kb.e + 1;
+  for (int k = kl; k <= ku; ++k) {
+    for (int j = jb.s - 1; j <= jb.e + 1; ++j) {
+      for (int i = ib.s - 1; i <= ib.e + 1; ++i) {
+        const Real x1_e1 = coords.X<1, TE::E1>(k, j, i);
+        const Real x2_e1 = coords.X<2, TE::E1>(k, j, i);
+        const Real x3_e1 = coords.X<3, TE::E1>(k, j, i);
+        const Real dx1 = gauss_offset * coords.Dxf<1>(i);
+        const auto a1_m =
+            EvaluateVectorPotential(x1_e1 - dx1, x2_e1, x3_e1, params);
+        const auto a1_p =
+            EvaluateVectorPotential(x1_e1 + dx1, x2_e1, x3_e1, params);
+        ax(k, j, i) = 0.5 * (a1_m[0] + a1_p[0]);
+
+        const Real x1_e2 = coords.X<1, TE::E2>(k, j, i);
+        const Real x2_e2 = coords.X<2, TE::E2>(k, j, i);
+        const Real x3_e2 = coords.X<3, TE::E2>(k, j, i);
+        const Real dx2 = gauss_offset * coords.Dxf<2>(j);
+        const auto a2_m =
+            EvaluateVectorPotential(x1_e2, x2_e2 - dx2, x3_e2, params);
+        const auto a2_p =
+            EvaluateVectorPotential(x1_e2, x2_e2 + dx2, x3_e2, params);
+        ay(k, j, i) = 0.5 * (a2_m[1] + a2_p[1]);
+
+        const Real x1_e3 = coords.X<1, TE::E3>(k, j, i);
+        const Real x2_e3 = coords.X<2, TE::E3>(k, j, i);
+        const Real x3_e3 = coords.X<3, TE::E3>(k, j, i);
+        if (two_d) {
+          az(k, j, i) =
+              EvaluateVectorPotential(x1_e3, x2_e3, x3_e3, params)[2];
+        } else {
+          const Real dx3 = gauss_offset * coords.Dxf<3>(k);
+          const auto a3_m =
+              EvaluateVectorPotential(x1_e3, x2_e3, x3_e3 - dx3, params);
+          const auto a3_p =
+              EvaluateVectorPotential(x1_e3, x2_e3, x3_e3 + dx3, params);
+          az(k, j, i) = 0.5 * (a3_m[2] + a3_p[2]);
+        }
+      }
+    }
+  }
+
+  const int nq3 = two_d ? 1 : 2;
+  const Real weight = 1.0 / static_cast<Real>(4 * nq3);
+  for (int k = kb.s; k <= kb.e; ++k) {
+    for (int j = jb.s; j <= jb.e; ++j) {
+      for (int i = ib.s; i <= ib.e; ++i) {
+        std::array<Real, IB3 + 1> u_average{};
+        for (int qk = 0; qk < nq3; ++qk) {
+          const Real zq =
+              two_d ? coords.Xc<3>(k)
+                    : coords.Xc<3>(k) +
+                          (qk == 0 ? -1.0 : 1.0) * gauss_offset *
+                              coords.Dxf<3>(k);
+          for (int qj = 0; qj < 2; ++qj) {
+            const Real yq =
+                coords.Xc<2>(j) + (qj == 0 ? -1.0 : 1.0) * gauss_offset *
+                                          coords.Dxf<2>(j);
+            for (int qi = 0; qi < 2; ++qi) {
+              const Real xq =
+                  coords.Xc<1>(i) + (qi == 0 ? -1.0 : 1.0) * gauss_offset *
+                                              coords.Dxf<1>(i);
+              const auto u_point = EvaluatePointConserved(xq, yq, zq, params);
+              for (int n = IDN; n <= IEN; ++n) {
+                u_average[n] += weight * u_point[n];
+              }
+            }
+          }
+        }
+        for (int n = IDN; n <= IEN; ++n) {
+          u(n, k, j, i) = u_average[n];
+        }
+      }
+    }
+  }
+
+  CurlEdgePotentialToFaceField(pmb, u, Bface, ax, ay, az);
+}
+
 //========================================================================================
 //! \fn void MeshBlock::ProblemGenerator(ParameterInput *pin)
 //! \brief field loop advection problem generator for 2D/3D problems.
@@ -212,7 +482,10 @@ void ProblemInitPackageData(ParameterInput *pin, parthenon::StateDescriptor *pkg
 
 void ProblemGenerator(MeshBlock *pmb, ParameterInput *pin) {
   // gives us ctmhd ucthlldmhd or glmmhd
-  const auto fluid = pmb->packages.Get("Hydro")->Param<Fluid>("fluid");
+  const auto hydro_pkg = pmb->packages.Get("Hydro");
+  const auto fluid = hydro_pkg->Param<Fluid>("fluid");
+  const bool fourth_order_init =
+      mhd_pgen_utils::UseFourthOrderFVInitialization(pmb);
 
   IndexRange ib = pmb->cellbounds.GetBoundsI(IndexDomain::interior);
   IndexRange jb = pmb->cellbounds.GetBoundsJ(IndexDomain::interior);
@@ -279,6 +552,11 @@ void ProblemGenerator(MeshBlock *pmb, ParameterInput *pin) {
       lambda = x3size * sin_a2;
     }
   }
+
+  const FieldLoopParameters params{
+      rad, amp, drat, gm1,
+      vflow1 * x1size, vflow2 * x2size, vflow3 * x3size,
+      cos_a2, sin_a2, lambda, iprob};
 
   // Use vector potential to initialize field loop
   auto &coords = pmb->coords;
@@ -412,15 +690,23 @@ void ProblemGenerator(MeshBlock *pmb, ParameterInput *pin) {
     auto &u_dev_face = mbd->Get("Bface").data;
     auto Bface = u_dev_face.GetHostMirrorAndCopy();
 
-    Bface_Fill_Cons(pmb, u, Bface, pin); 
+    if (fourth_order_init) {
+      PARTHENON_REQUIRE_THROWS(
+          iprob == 1 || iprob == 4,
+          "Fourth-order field-loop initialization currently supports iprob=1 and iprob=4");
+      InitializeFourthOrderFieldLoop(pmb, u, Bface, params);
+    } else {
+      Bface_Fill_Cons(pmb, u, Bface, pin);
+    }
     u_dev_face.DeepCopy(Bface);
   }
 
   // Initialize density and momenta.  If drat != 1, then density and temperature will be
   // different inside loop than background values
-  for (int k = kb.s; k <= kb.e; k++) {
-    for (int j = jb.s; j <= jb.e; j++) {
-      for (int i = ib.s; i <= ib.e; i++) {
+  if (!fourth_order_init) {
+    for (int k = kb.s; k <= kb.e; k++) {
+      for (int j = jb.s; j <= jb.e; j++) {
+        for (int i = ib.s; i <= ib.e; i++) {
         u(IDN, k, j, i) = 1.0;
         if ((SQR(coords.Xc<1>(i)) + SQR(coords.Xc<2>(j)) + SQR(coords.Xc<3>(k))) <
             rad * rad) {
@@ -452,6 +738,7 @@ void ProblemGenerator(MeshBlock *pmb, ParameterInput *pin) {
             0.5 * (SQR(u(IB1, k, j, i)) + SQR(u(IB2, k, j, i)) + SQR(u(IB3, k, j, i))) +
             0.5 * (SQR(u(IM1, k, j, i)) + SQR(u(IM2, k, j, i)) + SQR(u(IM3, k, j, i))) /
                 u(IDN, k, j, i);
+        }
       }
     }
   }
@@ -665,64 +952,7 @@ void Bface_Fill_Cons(MeshBlock *pmb, ConsHost &u, BfaceHost &Bface, ParameterInp
       }
     }
 
-  // Initialize density and momenta
-
-  auto &mbd = pmb->meshblock_data.Get();
-  // initializing on host
-  auto Bx_face = Bface.Get(IBF1, 0, 0, 0);
-  auto By_face = Bface.Get(IBF2, 0, 0, 0);
-  auto Bz_face = Bface.Get(IBF3, 0, 0, 0);
-
-  // fill Bface first (cell faces so +1 on the bounds)
-
-  // x-face
-  for (int k = kb.s; k <= kb.e; k++) {
-    for (int j = jb.s; j <= jb.e; j++) { 
-      for (int i = ib.s; i <= ib.e+1; i++) { // +1 here
-        // create face-fields with cell-corner defined az
-        Real aydz =
-            two_d ? 0.0 : (ay(k + 1, j, i) - ay(k, j, i)) / coords.Dxc<3>(k);
-        Bx_face(k, j, i) =
-            (az(k, j + 1, i) - az(k, j, i)) / coords.Dxc<2>(j) - aydz;
-      }
-    }
-  }
-  // y-face
-  for (int k = kb.s; k <= kb.e; k++) {
-    for (int j = jb.s; j <= jb.e+1; j++) { // +1 here
-      for (int i = ib.s; i <= ib.e; i++) { 
-        // create face-fields with cell-corner defined az
-        Real axdz =
-            two_d ? 0.0 : (ax(k + 1, j, i) - ax(k, j, i)) / coords.Dxc<3>(k);
-        By_face(k, j, i) =
-        axdz - (az(k, j, i + 1) - az(k, j, i)) / coords.Dxc<1>(i);
-      }
-    }
-  }
-  // z-face
-  for (int k = kb.s; k <= ku; k++) { // +1 here if 3D
-    for (int j = jb.s; j <= jb.e; j++) { 
-      for (int i = ib.s; i <= ib.e; i++) {
-        Bz_face(k, j, i) = 
-            two_d ? 0.0 : (ay(k, j, i + 1) - ay(k, j, i)) / coords.Dxc<1>(i) -
-                          (ax(k, j + 1, i) - ax(k, j, i)) / coords.Dxc<2>(j);
-      }
-    }
-  }
-  // now good to fill up the Bx/By/Bz cons vector
-  for (int k = kb.s; k <= kb.e; k++) {
-    for (int j = jb.s; j <= jb.e; j++) { 
-      for (int i = ib.s; i <= ib.e; i++) {
-        // create cell-centered B from face-centered average
-        u(IB1, k, j, i) =
-            0.5 * (Bx_face(k, j, i) + Bx_face(k, j, i + 1));
-        u(IB2, k, j, i) =
-            0.5 * (By_face(k, j, i) + By_face(k, j + 1, i));
-        u(IB3, k, j, i) = two_d ? 0.0 :
-            0.5 * (Bz_face(k, j, i) + Bz_face(k + 1, j, i));  
-      }
-    }
-  }
+  CurlEdgePotentialToFaceField(pmb, u, Bface, ax, ay, az);
 }
 
 } // namespace field_loop
