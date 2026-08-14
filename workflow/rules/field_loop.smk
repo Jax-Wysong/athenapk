@@ -1,5 +1,7 @@
 FIELD_LOOP = config["tests"]["field_loop"]
 FIELD_LOOP_MESH = FIELD_LOOP["mesh"][config["dimension"]]
+FIELD_LOOP_HYDRO_OPTIONS = hydro_cli_options(FIELD_LOOP)
+FIELD_LOOP_OUTPUT_VARIABLES = output_variable_list(FIELD_LOOP)
 FIELD_LOOP_PLANES = ["xy"] if config["dimension"] == "2D" else ["xy", "xz", "yz"]
 
 def field_loop_base_out(fluid):
@@ -13,21 +15,10 @@ if FIELD_LOOP["enabled"]:
         plane=FIELD_LOOP_PLANES,
     )
 
-if (
-    FIELD_LOOP["enabled"]
-    and config["dimension"] == "3D"
-    and FIELD_LOOP.get("paraview_movie", {}).get("enabled", False)
-):
-    field_loop_targets += expand(
-        "{outdir}/field_loop_3D_movie.mp4",
-        outdir=[
-            field_loop_base_out(fluid)
-            for fluid in FIELD_LOOP["paraview_movie"].get("fluids", [])
-            if fluid in config["fluids"]
-        ],
-    )
-
 rule run_field_loop:
+    input:
+        exe=config["athenapk"],
+        deck=FIELD_LOOP["input"]
     output:
         done=f"{config['results_root']}/{config['dimension']}/{{fluid}}/{FIELD_LOOP['dirname']}/phdf-files/run.done"
     log:
@@ -45,7 +36,12 @@ rule run_field_loop:
         mb_nx3=FIELD_LOOP_MESH["mb_nx3"],
         iprob=FIELD_LOOP_MESH["iprob"]
     resources:
-        runtime=120
+        runtime=360,
+        mem_mb=10000
+        #nodes=1,
+        #tasks=8,
+        #mpi="srun",
+        #mem_mb_per_cpu=10000
         #mem_mb=(default for now) mb means megabyte
         #slurm_partition=(default for now)
         # see https://snakemake.github.io/snakemake-plugin-catalog/plugins/executor/slurm.html
@@ -60,12 +56,13 @@ rule run_field_loop:
         rm -f {output.done}
         cd {params.rundir}
 
-        {config[athenapk]} -i {FIELD_LOOP[input]} \
+        {input.exe} -i {input.deck} \
           problem/field_loop/iprob={params.iprob} \
           parthenon/job/problem_id={params.problem_id} \
           parthenon/mesh/nx1={params.nx1} \
           parthenon/mesh/nx2={params.nx2} \
           parthenon/mesh/nx3={params.nx3} \
+          parthenon/mesh/nghost=3 \
           parthenon/meshblock/nx1={params.mb_nx1} \
           parthenon/meshblock/nx2={params.mb_nx2} \
           parthenon/meshblock/nx3={params.mb_nx3} \
@@ -75,10 +72,12 @@ rule run_field_loop:
           hydro/fluid={wildcards.fluid} \
           hydro/riemann={config[riemann]} \
           hydro/reconstruction={config[reconstruction]} \
+          hydro/convergence_order={config[convergence_order]} \
+          {FIELD_LOOP_HYDRO_OPTIONS} \
           hydro/gamma=1.666666666666667 \
           parthenon/output0/file_type=hdf5 \
           parthenon/output0/dt=0.02 \
-          parthenon/output0/variables=prim \
+          parthenon/output0/variables={FIELD_LOOP_OUTPUT_VARIABLES} \
           > {log.out} 2> {log.err}
     
         touch {output.done}
@@ -142,22 +141,3 @@ else:
             cd {params.outdir}
             {config[plotting_python]} {FIELD_LOOP[plotting_script]} {params.phdf} -o field_loop
             """
-
-rule add_field_loop_paraview_movie:
-    input:
-        src=lambda wc: FIELD_LOOP["paraview_movie"]["source"]
-    output:
-        movie=report(
-            f"{config['results_root']}/{config['dimension']}/{{fluid}}/{FIELD_LOOP['dirname']}/field_loop_3D_movie.mp4",
-            caption="../report/field_loop_paraview.rst",
-            category=f"{config['dimension']} Tests",
-            subcategory="{fluid} / Field Loop",
-            labels={"fluid": "{fluid}", "mesh": "uniform", "quantity": "3D ParaView rendering"},
-        )
-    params:
-        outdir=lambda wc: field_loop_base_out(wc.fluid)
-    shell:
-        """
-        mkdir -p {params.outdir}
-        cp {input.src} {output.movie}
-        """

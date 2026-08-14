@@ -2,6 +2,8 @@ CPAW_VIZ = config["tests"]["cpaw_viz"]
 CPAW_VIZ_SCENARIOS = CPAW_VIZ["scenarios"]
 CPAW_VIZ_SCENARIO_NAMES = list(CPAW_VIZ_SCENARIOS)
 CPAW_VIZ_N = CPAW_VIZ["resolution"]
+CPAW_VIZ_HYDRO_OPTIONS = hydro_cli_options(CPAW_VIZ, include_global=False)
+CPAW_VIZ_OUTPUT_VARIABLES = output_variable_list(CPAW_VIZ)
 
 
 def cpaw_viz_out(scenario):
@@ -72,14 +74,15 @@ rule run_cpaw_viz:
           parthenon/meshblock/nx3=1 \
           parthenon/time/tlim=1.0 \
           parthenon/time/cfl=0.3 \
-          parthenon/time/integrator={config[integrator]} \
+          parthenon/time/integrator={CPAW_VIZ[integrator]} \
           hydro/fluid={CPAW_VIZ[fluid]} \
-          hydro/riemann={config[riemann]} \
-          hydro/reconstruction={config[reconstruction]} \
+          hydro/riemann={CPAW_VIZ[riemann]} \
+          hydro/reconstruction={CPAW_VIZ[reconstruction]} \
+          {CPAW_VIZ_HYDRO_OPTIONS} \
           hydro/gamma=1.666666666666667 \
           parthenon/output0/file_type=hdf5 \
           parthenon/output0/dt={CPAW_VIZ[output_dt]} \
-          parthenon/output0/variables=prim \
+          parthenon/output0/variables={CPAW_VIZ_OUTPUT_VARIABLES} \
           > {log.out} 2> {log.err}
 
         touch {output.done}

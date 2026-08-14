@@ -1,0 +1,8 @@
+Repository: https://github.com/pgrete/energy-transfer-analysis
+Branch: back-to-mpi4py-fft
+Commit: d1577f91f96db2a8ff2d7e3c64375becce014647
+
+The Python analysis files and upstream README in this directory were copied unchanged
+from that revision. The LICENSE file is retained from the current upstream repository;
+the historical branch predates the addition of that file.
+

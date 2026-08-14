@@ -1,19 +1,75 @@
+import os
+import re
+import shlex
+
 configfile: "workflow/config.yaml"
 report: config.get("report_description", "report/workflow.rst")
 
+# Resolve repository-owned files without embedding a checkout-specific absolute path.
+repo_root = os.path.abspath(os.path.join(workflow.basedir, ".."))
+
+
+def repo_path(path):
+    return path if os.path.isabs(path) else os.path.join(repo_root, path)
+
+
+def _cli_value(value):
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return shlex.quote(str(value))
+
+
+def hydro_cli_options(test=None, include_global=True):
+    """Return scheme-specific Hydro overrides without hard-coding a method in rules."""
+    options = dict(config.get("hydro_options", {})) if include_global else {}
+    if test is not None:
+        options.update(test.get("hydro_options", {}))
+    return " ".join(
+        f"hydro/{name}={_cli_value(value)}" for name, value in options.items()
+    )
+
+
+def output_variable_list(test, default=("prim",)):
+    variables = test.get("output_variables", default)
+    if isinstance(variables, str):
+        return variables
+    return ",".join(variables)
+
+
+for executable_key in ("athenapk", "athenapk_mpi", "athenapk_mpi_hdf5"):
+    if executable_key in config:
+        config[executable_key] = repo_path(config[executable_key])
+
+for test in config.get("tests", {}).values():
+    for path_key in (
+        "input",
+        "order_script",
+        "plotting_script",
+        "field_line_script",
+        "energy_plotting_script",
+        "slice_plotting_script",
+        "spectrum_plotting_script",
+    ):
+        if path_key in test:
+            test[path_key] = repo_path(test[path_key])
+
+# Keep results from different numerical experiments separate even when they share a
+# base directory. Individual rules continue to use config["results_root"].
+base_results_root = repo_path(config["results_root"]).rstrip("/")
+scheme_id = config.get("scheme_id", "common")
+config["results_root"] = f"{base_results_root}/{scheme_id}"
+
 include: "rules/smooth_vortex.smk"
 include: "rules/linear_wave.smk"
-include: "rules/linear_wave_static.smk"
+include: "rules/linear_wave_directions.smk"
 include: "rules/field_loop.smk"
 include: "rules/field_loop_orientations.smk"
-include: "rules/field_loop_refined.smk"
-include: "rules/field_loop_static_refined.smk"
 include: "rules/orszag_tang.smk"
-include: "rules/orszag_tang_refined.smk"
-include: "rules/orszag_tang_static.smk"
 include: "rules/current_sheet.smk"
+include: "rules/mhd_cloud_shock.smk"
+include: "rules/mhd_blast.smk"
+include: "rules/turbulence.smk"
 include: "rules/cpaw.smk"
-include: "rules/cpaw_static.smk"
 include: "rules/cpaw_viz.smk"
 
 
@@ -24,15 +80,13 @@ rule all:
     input:
         smooth_vortex_targets,
         linear_wave_targets,
-        linear_wave_static_targets,
+        linear_wave_direction_targets,
         field_loop_targets,
         field_loop_orientation_targets,
-        field_loop_refined_targets,
-        field_loop_static_refined_targets,
         orszag_tang_targets,
-        orszag_tang_refined_targets,
-        orszag_tang_static_targets,
         current_sheet_targets,
+        mhd_cloud_shock_targets,
+        mhd_blast_targets,
+        turbulence_targets,
         cpaw_targets,
-        cpaw_static_targets,
         cpaw_viz_targets

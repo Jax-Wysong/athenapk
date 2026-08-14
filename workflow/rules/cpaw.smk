@@ -1,5 +1,7 @@
 CPAW = config["tests"]["cpaw"]
 CPAW_RESOLUTIONS = CPAW["resolutions"]
+CPAW_HYDRO_OPTIONS = hydro_cli_options(CPAW)
+CPAW_OUTPUT_VARIABLES = output_variable_list(CPAW)
 
 def cpaw_out(fluid):
     return f"{config['results_root']}/{config['dimension']}/{fluid}/{CPAW['dirname']}"
@@ -13,6 +15,9 @@ if CPAW["enabled"]:
 
 
 rule run_cpaw:
+    input:
+        exe=config["athenapk_mpi"],
+        deck=CPAW["input"]
     output:
         dat=f"{config['results_root']}/{config['dimension']}/{{fluid}}/{CPAW['dirname']}/runs/N{{N}}/cpaw-errors.dat"
     log:
@@ -32,7 +37,7 @@ rule run_cpaw:
     resources:
         runtime=120,
         nodes=1,
-        tasks=16,
+        tasks=8,
         mpi="srun",
         mem_mb_per_cpu=4000
         #slurm_partition=(default for now)
@@ -45,7 +50,7 @@ rule run_cpaw:
         cd {params.rundir}
         rm -f {output.dat}
 
-        {resources.mpi} -n {resources.tasks} {config[athenapk_mpi]} -i {CPAW[input]} \
+        {resources.mpi} -n {resources.tasks} {input.exe} -i {input.deck} \
           parthenon/job/problem_id={params.problem_id} \
           problem/cpaw/compute_error=true \
           problem/cpaw/ang_2={params.ang_2} \
@@ -53,6 +58,7 @@ rule run_cpaw:
           parthenon/mesh/nx1={params.nx1} \
           parthenon/mesh/nx2={params.nx2} \
           parthenon/mesh/nx3={params.nx3} \
+          parthenon/mesh/nghost=3 \
           parthenon/meshblock/nx1={params.nx1_mb} \
           parthenon/meshblock/nx2={params.nx2_mb} \
           parthenon/meshblock/nx3={params.nx3_mb} \
@@ -62,10 +68,12 @@ rule run_cpaw:
           hydro/fluid={wildcards.fluid} \
           hydro/riemann={config[riemann]} \
           hydro/reconstruction={config[reconstruction]} \
+          hydro/convergence_order={config[convergence_order]} \
+          {CPAW_HYDRO_OPTIONS} \
           hydro/gamma=1.666666666666667 \
           parthenon/output0/file_type=hdf5 \
           parthenon/output0/dt=-0.01 \
-          parthenon/output0/variables=prim \
+          parthenon/output0/variables={CPAW_OUTPUT_VARIABLES} \
           > {log.out} 2> {log.err}
         """
 

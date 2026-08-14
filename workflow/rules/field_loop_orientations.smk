@@ -1,5 +1,9 @@
 FIELD_LOOP_ORIENTATIONS = config["tests"]["field_loop_orientations"]
 FIELD_LOOP_ORIENTATIONS_MESH = FIELD_LOOP_ORIENTATIONS["mesh"]["2D"]
+FIELD_LOOP_ORIENTATIONS_HYDRO_OPTIONS = hydro_cli_options(FIELD_LOOP_ORIENTATIONS)
+FIELD_LOOP_ORIENTATIONS_OUTPUT_VARIABLES = output_variable_list(
+    FIELD_LOOP_ORIENTATIONS
+)
 FIELD_LOOP_ORIENTATION_VECTORS = FIELD_LOOP_ORIENTATIONS["orientations"]
 
 if FIELD_LOOP_ORIENTATIONS["enabled"] and config["dimension"] != "2D":
@@ -86,6 +90,7 @@ rule run_field_loop_orientation:
           parthenon/mesh/nx1={params.nx1} \
           parthenon/mesh/nx2={params.nx2} \
           parthenon/mesh/nx3={params.nx3} \
+          parthenon/mesh/nghost=3 \
           parthenon/meshblock/nx1={params.mb_nx1} \
           parthenon/meshblock/nx2={params.mb_nx2} \
           parthenon/meshblock/nx3={params.mb_nx3} \
@@ -95,10 +100,12 @@ rule run_field_loop_orientation:
           hydro/fluid={wildcards.fluid} \
           hydro/riemann={config[riemann]} \
           hydro/reconstruction={config[reconstruction]} \
+          hydro/convergence_order={config[convergence_order]} \
+          {FIELD_LOOP_ORIENTATIONS_HYDRO_OPTIONS} \
           hydro/gamma=1.666666666666667 \
           parthenon/output0/file_type=hdf5 \
           parthenon/output0/dt=0.02 \
-          parthenon/output0/variables=prim \
+          parthenon/output0/variables={FIELD_LOOP_ORIENTATIONS_OUTPUT_VARIABLES} \
           > {log.out} 2> {log.err}
 
         touch {output.done}

@@ -1,138 +1,95 @@
-plotting_python: /mnt/home/wysongj2/.conda/envs/mhd/bin/python
-gnuplot: /mnt/home/wysongj2/.conda/envs/mhd/bin/gnuplot
-athenapk: /mnt/home/wysongj2/athenapk/build-host/bin/athenaPK
-# cannot currently use mpi if want .pdhf's
-# h5py not compatible. But good for convergence test runs
-athenapk_mpi: /mnt/home/wysongj2/athenapk/build-mpi/bin/athenaPK
+# Portable defaults for the uniform-grid MHD comparison workflow.
+# Paths relative to the repository are resolved by workflow/Snakefile. Override
+# machine-specific executable and results paths from the command line or a local config.
+plotting_python: python
+gnuplot: gnuplot
+athenapk: build-host/bin/athenaPK
+athenapk_mpi: build-mpi/bin/athenaPK
+athenapk_mpi_hdf5: build-mpi-site-hdf5/bin/athenaPK
 
-results_root: /mnt/home/wysongj2/athenapk/test-suite-uct-ct-glm
+results_root: workflow-results
+scheme_id: common
 report_description: report/workflow.rst
 
-dimension: 2D
+dimension: 3D
+fluids: [ucthlldmhd]
 
-fluids:
-  - ctmhd
-  - ucthlldmhd
-  - glmmhd
-
+# Scheme-neutral second-order defaults. Fourth-order branches override these in a
+# local configuration and may supply additional Hydro parameters in hydro_options.
 reconstruction: plm
 riemann: hlld
 integrator: rk2
+convergence_order: 2
+hydro_options: {}
 
-
-
-
+# Expensive tests are disabled by default. The resolutions below are convenient
+# development defaults
 tests:
   smooth_vortex:
     enabled: false
-    input: /mnt/home/wysongj2/athenapk/inputs/ct_glm_compatible/smooth_mhd_vortex.in
+    input: inputs/ct_glm_compatible/smooth_mhd_vortex.in
     dirname: smooth_mhd_vortex
-    order_script: /mnt/home/wysongj2/athenapk/workflow/diagnostics_scripts/compute_smooth_vortex_orders.py
-    resolutions: [16, 32, 64, 128, 256]
+    order_script: workflow/diagnostics_scripts/compute_smooth_vortex_orders.py
+    resolutions: [8, 16, 32, 64]
 
   linear_wave:
     enabled: false
-    input: /mnt/home/wysongj2/athenapk/inputs/ct_glm_compatible/linear_mhd_wave.in
-    dirname: linear_mhd_wave_unrefined
-    order_script: /mnt/home/wysongj2/athenapk/workflow/diagnostics_scripts/linear_mhd_wave_orders.py
+    input: inputs/ct_glm_compatible/linear_mhd_wave.in
+    dirname: linear_mhd_wave
+    order_script: workflow/diagnostics_scripts/linear_mhd_wave_orders.py
     waves: [0, 1, 2, 4, 5, 6]
-    resolutions: [16, 32, 64, 128]
-
+    resolutions: [4, 8, 16, 32, 64]
     mesh:
       2D:
         ang_2: 0.0
+      3D: {}
 
-      
-      3D:
-
-  linear_wave_static:
+  linear_wave_directions:
     enabled: false
-    input: /mnt/home/wysongj2/athenapk/inputs/ct_glm_compatible/linear_mhd_wave.in
-    dirname: linear_mhd_wave_static
-    order_script: /mnt/home/wysongj2/athenapk/workflow/diagnostics_scripts/linear_mhd_wave_orders.py
-    waves: [0, 1, 2, 4, 5, 6]
-    resolutions: [16, 32, 64, 128]
-    mesh_plot_resolution: 16
-
-    refinement_regions:
-      - x1min: 0.5
-        x1max: 2.5
-        x2min: 0.25
-        x2max: 1.25
-        x3min: 0.25
-        x3max: 1.25
-        level: 1
-
-      - x1min: 1.0
-        x1max: 2.0
-        x2min: 0.5
-        x2max: 1.0
-        x3min: 0.5
-        x3max: 1.0
-        level: 2
-
-      # - x1min: 1.25
-      #   x1max: 1.75
-      #   x2min: 0.65
-      #   x2max: 0.85
-      #   x3min: 0.65
-      #   x3max: 0.85
-      #   level: 3
+    input: inputs/ct_glm_compatible/linear_mhd_wave.in
+    dirname: linear_mhd_wave_directions
+    order_script: workflow/diagnostics_scripts/linear_mhd_wave_orders.py
+    plotting_script: workflow/diagnostics_scripts/linear_wave_direction_viz.py
+    wave: 1
+    resolutions: [4, 8, 16, 32, 64]
+    visualization_resolution: 64
+    output_dt: 0.01
+    fps: 8
+    directions:
+      right: [1, 0, 0]
+      left: [-1, 0, 0]
+      up: [0, 1, 0]
+      down: [0, -1, 0]
+      up-right: [1, 1, 0]
+      up-left: [-1, 1, 0]
+      down-right: [1, -1, 0]
+      down-left: [-1, -1, 0]
 
   cpaw:
     enabled: false
-    input: /mnt/home/wysongj2/athenapk/inputs/ct_glm_compatible/cpaw.in
+    input: inputs/ct_glm_compatible/cpaw.in
     dirname: cpaw
-    order_script: /mnt/home/wysongj2/athenapk/workflow/diagnostics_scripts/cpaw_orders.py
-    resolutions: [16, 32, 64, 128]
-
+    order_script: workflow/diagnostics_scripts/cpaw_orders.py
+    resolutions: [8, 16, 32, 64]
     mesh:
       2D:
         ang_2: 0.0
-
-      
-      3D:
-
-
-  cpaw_static:
-    enabled: false
-    input: /mnt/home/wysongj2/athenapk/inputs/ct_glm_compatible/cpaw.in
-    dirname: cpaw_static
-    order_script: /mnt/home/wysongj2/athenapk/workflow/diagnostics_scripts/cpaw_orders.py
-    resolutions: [16, 32, 64, 128]
-    mesh_plot_resolution: 16
-
-    refinement_regions:
-      - x1min: 0.5
-        x1max: 2.5
-        x2min: 0.25
-        x2max: 1.25
-        x3min: 0.25
-        x3max: 1.25
-        level: 1
-
-      - x1min: 1.0
-        x1max: 2.0
-        x2min: 0.5
-        x2max: 1.0
-        x3min: 0.5
-        x3max: 1.0
-        level: 2
-
+      3D: {}
 
   cpaw_viz:
     enabled: false
-    input: /mnt/home/wysongj2/athenapk/inputs/ct_glm_compatible/cpaw.in
+    input: inputs/ct_glm_compatible/cpaw.in
     dirname: cpaw_viz
-    plotting_script: /mnt/home/wysongj2/athenapk/workflow/diagnostics_scripts/cpaw_viz.py
+    plotting_script: workflow/diagnostics_scripts/cpaw_viz.py
     dimension: 2D
     fluid: ctmhd
+    reconstruction: plm
+    riemann: hlld
+    integrator: rk2
     resolution: 64
     output_dt: 0.01
-
     mesh:
       ang_2: 0.0
-
     scenarios:
       traveling:
         v_par: 1.0
@@ -141,19 +98,11 @@ tests:
         v_par: 1.0
         dir: 2
 
-
-
   field_loop:
     enabled: false
-    input: /mnt/home/wysongj2/athenapk/inputs/ct_glm_compatible/field_loop.in
+    input: inputs/ct_glm_compatible/field_loop.in
     dirname: field_loop
-    plotting_script: /mnt/home/wysongj2/athenapk/workflow/diagnostics_scripts/field_loop_video.py
-  
-    paraview_movie:
-        enabled: false
-        source: /mnt/home/wysongj2/athenapk/field_loop_3D_movie.mp4
-        fluids: [ctmhd]
-
+    plotting_script: workflow/diagnostics_scripts/field_loop_video.py
     mesh:
       2D:
         nx1: 128
@@ -163,7 +112,6 @@ tests:
         mb_nx2: 64
         mb_nx3: 1
         iprob: 1
-      
       3D:
         nx1: 128
         nx2: 64
@@ -174,11 +122,10 @@ tests:
         iprob: 4
 
   field_loop_orientations:
-    enabled: true
-    input: /mnt/home/wysongj2/athenapk/inputs/ct_glm_compatible/field_loop.in
+    enabled: false
+    input: inputs/ct_glm_compatible/field_loop.in
     dirname: field_loop_orientations
-    plotting_script: /mnt/home/wysongj2/athenapk/workflow/diagnostics_scripts/field_loop_video.py
-
+    plotting_script: workflow/diagnostics_scripts/field_loop_video.py
     mesh:
       2D:
         nx1: 64
@@ -188,141 +135,111 @@ tests:
         mb_nx2: 32
         mb_nx3: 1
         iprob: 1
-
     orientations:
-      right:
-        vflow1: 1.0
-        vflow2: 0.0
-      left:
-        vflow1: -1.0
-        vflow2: 0.0
-      up:
-        vflow1: 0.0
-        vflow2: 1.0
-      down:
-        vflow1: 0.0
-        vflow2: -1.0
-      up-right:
-        vflow1: 1.0
-        vflow2: 1.0
-      up-left:
-        vflow1: -1.0
-        vflow2: 1.0
-      down-right:
-        vflow1: 1.0
-        vflow2: -1.0
-      down-left:
-        vflow1: -1.0
-        vflow2: -1.0
-
-  field_loop_refined:
-    enabled: false
-    input: /mnt/home/wysongj2/athenapk/inputs/ct_glm_compatible/field_loop.in
-    dirname: field_loop_refined
-    plotting_script: /mnt/home/wysongj2/athenapk/workflow/diagnostics_scripts/field_loop_AMR.py
-
-    mesh:
-      2D:
-        nx1: 128
-        nx2: 64
-        nx3: 1
-        mb_nx1: 32
-        mb_nx2: 16
-        mb_nx3: 1
-        iprob: 1
-      
-      3D:
-        nx1: 64
-        nx2: 32
-        nx3: 32
-        mb_nx1: 16
-        mb_nx2: 8
-        mb_nx3: 8
-        iprob: 4
-
-  field_loop_static_refined:
-    enabled: false
-    input: /mnt/home/wysongj2/athenapk/inputs/ct_glm_compatible/field_loop.in
-    dirname: field_loop_static_refined
-    plotting_script: /mnt/home/wysongj2/athenapk/workflow/diagnostics_scripts/field_loop_AMR.py
-    problem_id: field_loop_static_centered
-
-    mesh:
-      nx1: 128
-      nx2: 64
-      nx3: 64
-      mb_nx1: 32
-      mb_nx2: 16
-      mb_nx3: 16
-      iprob: 4
-
-    refinement_regions:
-      - x1min: -0.5
-        x1max: 0.5
-        x2min: -0.25
-        x2max: 0.25
-        x3min: -0.25
-        x3max: 0.25
-        level: 1
+      right: {vflow1: 1.0, vflow2: 0.0}
+      left: {vflow1: -1.0, vflow2: 0.0}
+      up: {vflow1: 0.0, vflow2: 1.0}
+      down: {vflow1: 0.0, vflow2: -1.0}
+      up-right: {vflow1: 1.0, vflow2: 1.0}
+      up-left: {vflow1: -1.0, vflow2: 1.0}
+      down-right: {vflow1: 1.0, vflow2: -1.0}
+      down-left: {vflow1: -1.0, vflow2: -1.0}
 
   orszag_tang:
     enabled: false
-    input: /mnt/home/wysongj2/athenapk/inputs/ct_glm_compatible/orszag_tang.in
+    input: inputs/ct_glm_compatible/orszag_tang.in
     dirname: orszag_tang
-    plotting_script: /mnt/home/wysongj2/athenapk/workflow/diagnostics_scripts/orszag_tang_video.py
-    resolution: [256, 256]
-
-  orszag_tang_refined:
-    enabled: false
-    input: /mnt/home/wysongj2/athenapk/inputs/ct_glm_compatible/orszag_tang.in
-    dirname: orszag_tang_refined
-    movie_script: /mnt/home/wysongj2/athenapk/workflow/diagnostics_scripts/orszang_tang_AMR.py
-    resolution: [256, 256]
-
-  orszag_tang_static:
-    enabled: false
-    fluids:
-      - ctmhd
-    input: /mnt/home/wysongj2/athenapk/inputs/ct_glm_compatible/orszag_tang.in
-    dirname: orszag_tang_static
-    movie_script: /mnt/home/wysongj2/athenapk/workflow/diagnostics_scripts/orszang_tang_AMR.py
-    resolution: [256, 256]
-    meshblock: [64, 64]
-    output_dt: 0.01
-    history_dt: 0.005
-
-    refinement_regions:
-      - x1min: 0.0
-        x1max: 1.0
-        x2min: 0.0
-        x2max: 0.25
-        level: 1
-
-      - x1min: 0.0
-        x1max: 1.0
-        x2min: 0.75
-        x2max: 1.0
-        level: 1
-
-      - x1min: 0.25
-        x1max: 0.75
-        x2min: 0.0
-        x2max: 0.125
-        level: 2
-
-      - x1min: 0.25
-        x1max: 0.75
-        x2min: 0.875
-        x2max: 1.0
-        level: 2
+    plotting_script: workflow/diagnostics_scripts/orszag_tang_video.py
+    resolution: [128, 128]
+    meshblock: [128, 128]
 
   current_sheet:
     enabled: false
-    fluids:
-      - ctmhd
-      - ucthlldmhd
-    input: /mnt/home/wysongj2/athenapk/inputs/ct_glm_compatible/current_sheet.in
+    fluids: [ucthlldmhd]
+    input: inputs/ct_glm_compatible/current_sheet.in
     dirname: current_sheet
-    plotting_script: /mnt/home/wysongj2/athenapk/workflow/diagnostics_scripts/current_sheet_movie.py
-    field_line_script: /mnt/home/wysongj2/athenapk/workflow/diagnostics_scripts/current_sheet_field_lines.py
-    resolution: [256, 256]
+    plotting_script: workflow/diagnostics_scripts/current_sheet_movie.py
+    field_line_script: workflow/diagnostics_scripts/current_sheet_field_lines.py
+    resolution: [128, 128]
+    meshblock: [128, 128]
+
+  mhd_cloud_shock:
+    enabled: false
+    input: inputs/ct_glm_compatible/mhd_cloud_shock.in
+    dirname: mhd_cloud_shock
+    plotting_script: workflow/diagnostics_scripts/mhd_cloud_shock_density.py
+    resolution: [64, 64, 64]
+    meshblock: [32, 32, 32]
+    output_dt: 0.002
+    fps: 8
+    mpi_tasks: 8
+    mem_mb_per_cpu: 4000
+
+  mhd_blast:
+    enabled: false
+    input: inputs/ct_glm_compatible/mhd_blast.in
+    dirname: mhd_blast
+    plotting_script: workflow/diagnostics_scripts/mhd_blast_density.py
+    resolution: [64, 64, 64]
+    meshblock: [32, 32, 32]
+    tlim: 0.2
+    output_dt: 0.01
+    fps: 8
+    mpi_tasks: 8
+    mem_mb_per_cpu: 4000
+
+  # This comparison is independent of the global numerical settings above. Cases are
+  # data-driven so another branch can replace or extend the list without editing rules.
+  turbulence:
+    enabled: false
+    input: inputs/turbulence_wendeln.in
+    dirname: turbulence
+    output_group: mhd_comparison
+    energy_plotting_script: workflow/diagnostics_scripts/turbulence/energies.py
+    slice_plotting_script: workflow/diagnostics_scripts/turbulence/slices.py
+    spectrum_plotting_script: workflow/diagnostics_scripts/turbulence/plot_power_spectra.py
+    resolution: [64, 64, 64]
+    meshblock: [32, 32, 32]
+    tlim: 60.0
+    history_dt: 0.1
+    output_dt: 0.5
+    cases:
+      glm_weno3js:
+        label: AthenaPK WENO3
+        fluid: glmmhd
+        riemann: hlld
+        reconstruction: weno3js
+        integrator: rk3
+        convergence_order: 2
+        first_order_flux_correct: false
+        nghost: 2
+      glm_weno5js:
+        label: AthenaPK WENO5
+        fluid: glmmhd
+        riemann: hlld
+        reconstruction: weno5js
+        integrator: rk3
+        convergence_order: 2
+        first_order_flux_correct: false
+        nghost: 3
+      uct2_weno3:
+        label: UCT-HLLD 2nd
+        fluid: ucthlldmhd
+        riemann: hlld
+        reconstruction: weno3
+        integrator: rk2
+        convergence_order: 2
+        first_order_flux_correct: false
+        nghost: 2
+    spectra:
+      enabled: true
+      dump_ids: [118, 119, 120]
+      analysis_nodes: 1
+      analysis_tasks: 8
+      mem_mb_per_cpu: 4000
+      runtime: 120
+      kernels: [Gauss]
+    nodes: 1
+    tasks_per_node: 8
+    mpi_tasks: 8
+    mem_mb_per_cpu: 4000

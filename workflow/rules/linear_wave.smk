@@ -1,5 +1,7 @@
 LIN_WAVE = config["tests"]["linear_wave"]
 LIN_WAVE_RESOLUTIONS = LIN_WAVE["resolutions"]
+LIN_WAVE_HYDRO_OPTIONS = hydro_cli_options(LIN_WAVE)
+LIN_WAVE_OUTPUT_VARIABLES = output_variable_list(LIN_WAVE)
 LIN_WAVE_WAVES = LIN_WAVE["waves"]
 
 def linear_wave_out(fluid):
@@ -14,6 +16,9 @@ if LIN_WAVE["enabled"]:
     )
 
 rule run_linear_wave:
+    input:
+        exe=config["athenapk"],
+        deck=LIN_WAVE["input"]
     output:
         dat=f"{config['results_root']}/{config['dimension']}/{{fluid}}/{LIN_WAVE['dirname']}/wave_{{wave}}/runs/N{{N}}/linearwave-errors-{{wave}}.dat"
     log:
@@ -26,16 +31,17 @@ rule run_linear_wave:
         nx1=lambda wildcards: 2 * int(wildcards.N),
         nx2=lambda wildcards: int(wildcards.N),
         nx3=lambda wc: 1 if config["dimension"] == "2D" else int(wc.N),
-        nx1_mb=lambda wildcards: 2 * (int(wildcards.N) // 4),
-        nx2_mb=lambda wildcards: (int(wildcards.N) // 2),
-        nx3_mb=lambda wc: 1 if config["dimension"] == "2D" else (int(wc.N) // 2),
+        nx1_mb=lambda wildcards: 2 * (int(wildcards.N)),
+        nx2_mb=lambda wildcards: (int(wildcards.N)),
+        nx3_mb=lambda wc: 1 if config["dimension"] == "2D" else (int(wc.N)),
         ang_2=lambda wc: LIN_WAVE["mesh"]["2D"]["ang_2"] if config["dimension"] == "2D" else -999.9
     resources:
         runtime=120,
-        nodes=1,
-        tasks=16,
-        mpi="srun",
-        mem_mb_per_cpu=2000
+        mem_mb=4000
+        #mpi="srun",
+        #nodes=1,
+        #tasks=1,
+        #mem_mb_per_cpu=4000
         #slurm_partition=(default for now)
         # see https://snakemake.github.io/snakemake-plugin-catalog/plugins/executor/slurm.html
         # for more options (number of tasks per job, cpu per task, mem per cpu, etc)
@@ -46,7 +52,7 @@ rule run_linear_wave:
         cd {params.rundir}
         rm -f {output.dat}
 
-        {resources.mpi} -n {resources.tasks} {config[athenapk_mpi]} -i {LIN_WAVE[input]} \
+        {input.exe} -i {input.deck} \
           parthenon/job/problem_id={params.problem_id} \
           problem/linear_wave_mhd/wave_flag={wildcards.wave} \
           problem/linear_wave_mhd/compute_error=true \
@@ -54,6 +60,7 @@ rule run_linear_wave:
           parthenon/mesh/nx1={params.nx1} \
           parthenon/mesh/nx2={params.nx2} \
           parthenon/mesh/nx3={params.nx3} \
+          parthenon/mesh/nghost=3 \
           parthenon/meshblock/nx1={params.nx1_mb} \
           parthenon/meshblock/nx2={params.nx2_mb} \
           parthenon/meshblock/nx3={params.nx3_mb} \
@@ -63,10 +70,12 @@ rule run_linear_wave:
           hydro/fluid={wildcards.fluid} \
           hydro/riemann={config[riemann]} \
           hydro/reconstruction={config[reconstruction]} \
+          hydro/convergence_order={config[convergence_order]} \
+          {LIN_WAVE_HYDRO_OPTIONS} \
           hydro/gamma=1.666666666666667 \
           parthenon/output0/file_type=hdf5 \
           parthenon/output0/dt=-0.01 \
-          parthenon/output0/variables=prim \
+          parthenon/output0/variables={LIN_WAVE_OUTPUT_VARIABLES} \
           > {log.out} 2> {log.err}
         """
 
