@@ -497,6 +497,9 @@ void center_Mag_Field(MeshData<Real> *md) {
                              Bface(TE::F3, 0, k, j, i))
                     : b3_god;
 
+            // Mignone/Del Zanna (2021) "Systematic Construction of Upwind CT schemes for MHD"
+            // mention that this may be needed to avoid negative pressures (paragraph under eq. 61), but I
+            // believe that it removes energy conservation, so it's implemented as a user option for now...
             if (correct_ct_energy) {
               const Real emag_god =
                   0.5 * (SQR(b1_god) + SQR(b2_god) + SQR(b3_god));

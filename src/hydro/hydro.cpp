@@ -1324,6 +1324,14 @@ TaskStatus CalculateFluxes(std::shared_ptr<MeshData<Real>> &md) {
       DEFAULT_OUTER_LOOP_PATTERN, "x1 flux", DevExecSpace(), scratch_size_in_bytes,
       scratch_level, 0, cons_in.GetDim(5) - 1, kl, ku, jl, ju,
       KOKKOS_LAMBDA(parthenon::team_mbr_t member, const int b, const int k, const int j) {
+        // Force captures outside compile-time branches for NVCC extended-lambda
+        // compatibility. Solver-specific packs remain shallow and are only
+        // dereferenced by the matching specialization.
+        (void)Bface_pack;
+        (void)uct_hlld_pack;
+        (void)riemann;
+        (void)eos;
+        (void)c_h;
         const auto &prim = prim_in(b);
         auto &cons = cons_in(b);
         parthenon::ScratchPad2D<Real> wl(member.team_scratch(scratch_level),
@@ -1388,6 +1396,12 @@ TaskStatus CalculateFluxes(std::shared_ptr<MeshData<Real>> &md) {
         DEFAULT_OUTER_LOOP_PATTERN, "x2 flux", DevExecSpace(), scratch_size_in_bytes,
         scratch_level, 0, cons_in.GetDim(5) - 1, kl, ku,
         KOKKOS_LAMBDA(parthenon::team_mbr_t member, const int b, const int k) {
+          // See the x1 loop above: force captures before any if constexpr.
+          (void)Bface_pack;
+          (void)uct_hlld_pack;
+          (void)riemann;
+          (void)eos;
+          (void)c_h;
           const auto &prim = prim_in(b);
           auto &cons = cons_in(b);
           parthenon::ScratchPad2D<Real> wl(member.team_scratch(scratch_level),
@@ -1452,6 +1466,12 @@ TaskStatus CalculateFluxes(std::shared_ptr<MeshData<Real>> &md) {
         DEFAULT_OUTER_LOOP_PATTERN, "x3 flux", DevExecSpace(), scratch_size_in_bytes,
         scratch_level, 0, cons_in.GetDim(5) - 1, jl, ju,
         KOKKOS_LAMBDA(parthenon::team_mbr_t member, const int b, const int j) {
+          // See the x1 loop above: force captures before any if constexpr.
+          (void)Bface_pack;
+          (void)uct_hlld_pack;
+          (void)riemann;
+          (void)eos;
+          (void)c_h;
           const auto &prim = prim_in(b);
           auto &cons = cons_in(b);
           parthenon::ScratchPad2D<Real> wl(member.team_scratch(scratch_level),
