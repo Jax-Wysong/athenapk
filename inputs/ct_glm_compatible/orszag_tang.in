@@ -35,7 +35,7 @@ ix3_bc = periodic
 ox3_bc = periodic
 
 <parthenon/meshblock>
-nx1 = 64
+nx1 = 256
 nx2 = 256
 nx3 = 1
 
@@ -47,11 +47,12 @@ nlim = -1
 perf_cycle_offset = 2 # number of inital cycles not to be included in perf calc
 
 <hydro>
-fluid = ctmhd
+fluid = ucthlldmhd
 eos = adiabatic
 riemann = hlld
 reconstruction = plm
 gamma = 1.666666666666667 # gamma = C_p/C_v
+pfloor = 1.0e-15
 scratch_level = 1 # 0 is actual scratch (tiny); 1 is HBM
 
 

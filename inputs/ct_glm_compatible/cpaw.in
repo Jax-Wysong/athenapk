@@ -3,7 +3,7 @@
 # Licensed under the BSD 3-Clause License (the "LICENSE");
 
 <comment>
-problem   = 3D Circularly Polarized Alfven Wave
+problem   = 2D Circularly Polarized Alfven Wave
 reference = G. Toth. JCP, vol. 161, pp. 605-662 (2000).
 
 <job>
@@ -14,8 +14,9 @@ compute_error = true  # set value to one to compute L1 error compared to initial
 b_par   = 1.0         # B parallel
 b_perp  = 0.1         # B perpendicular
 pres    = 0.1         # pressure
-v_par   = 0.0         # vpar = 1 with dir=1 is traveling
+v_par   = 1.0         # vpar = 1 with dir=1 is traveling
 dir     = 1           # 1: right polarization 2: left
+ang_2   = 0.0         # 0.0 selects 2D oblique-wave setup
 
 <parthenon/mesh>
 refinement = none
@@ -33,26 +34,26 @@ x2max = 1.5
 ix2_bc = periodic
 ox2_bc = periodic
 
-nx3 = 32
+nx3 = 1
 x3min = 0.0
 x3max = 1.5
 ix3_bc = periodic
 ox3_bc = periodic
 
 <parthenon/meshblock>
-nx1=32
-nx2=32 
-nx3=32
+nx1=16
+nx2=16
+nx3=1
 
 <parthenon/time>
-integrator = vl2
+integrator = rk2
 cfl = 0.3
 tlim = 1.0
 nlim = 100000
 perf_cycle_offset = 2 # number of inital cycles not to be included in perf calc
 
 <hydro>
-fluid = glmmhd
+fluid = ucthlldmhd
 eos = adiabatic
 reconstruction = plm
 riemann = hlld
@@ -61,8 +62,8 @@ scratch_level = 1 # 0 is actual scratch (tiny); 1 is HBM
 
 <parthenon/output0>
 file_type = hdf5
-dt = 0.1
-variables = cons
+dt = -0.01
+variables = prim
 
 <parthenon/output1>
 file_type = hst
