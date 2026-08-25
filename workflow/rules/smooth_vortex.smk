@@ -2,6 +2,16 @@ SMOOTH = config["tests"]["smooth_vortex"]
 SMOOTH_RESOLUTIONS = SMOOTH["resolutions"]
 SMOOTH_HYDRO_OPTIONS = hydro_cli_options(SMOOTH)
 SMOOTH_OUTPUT_VARIABLES = output_variable_list(SMOOTH)
+SMOOTH_REQUESTED_MPI_TASKS = int(SMOOTH.get("mpi_tasks", 4))
+SMOOTH_MEM_MB_PER_CPU = int(SMOOTH.get("mem_mb_per_cpu", 4000))
+SMOOTH_MPI_TASKS = min(SMOOTH_REQUESTED_MPI_TASKS, 4)
+SMOOTH_MPI_RESOURCE = "srun" if SMOOTH_MPI_TASKS > 1 else False
+SMOOTH_LAUNCHER = f"srun -n {SMOOTH_MPI_TASKS}"
+
+if SMOOTH_REQUESTED_MPI_TASKS < 1:
+    raise ValueError("smooth_vortex mpi_tasks must be positive")
+if SMOOTH_MEM_MB_PER_CPU < 1:
+    raise ValueError("smooth_vortex mem_mb_per_cpu must be positive")
 
 def smooth_vortex_out(fluid):
     return f"{config['results_root']}/{config['dimension']}/{fluid}/{SMOOTH['dirname']}"
@@ -19,18 +29,26 @@ rule run_smooth_vortex:
     log:
         out=f"{config['results_root']}/{config['dimension']}/{{fluid}}/{SMOOTH['dirname']}/runs/N{{N}}/run.out",
         err=f"{config['results_root']}/{config['dimension']}/{{fluid}}/{SMOOTH['dirname']}/runs/N{{N}}/run.err"
+    envmodules:
+        *SIMULATION_ENVMODULES
     params:
         outdir=lambda wildcards: smooth_vortex_out(wildcards.fluid),
         rundir=lambda wildcards: f"{smooth_vortex_out(wildcards.fluid)}/runs/N{wildcards.N}",
         problem_id=lambda wildcards: f"smooth_mhd_vortex_{wildcards.fluid}_N{wildcards.N}",
-        nx1_mb=lambda wildcards: (int(wildcards.N) // 4),
-        nx2_mb=lambda wildcards: (int(wildcards.N) // 4)
+        nx1_mb=lambda wildcards: (int(wildcards.N) // 2),
+        nx2_mb=lambda wildcards: (int(wildcards.N) // 2),
+        launcher=SMOOTH_LAUNCHER
     resources:
-        runtime=120,
+        runtime=240,
         nodes=1,
-        tasks=16,
-        mpi="srun",
-        mem_mb_per_cpu=4000
+        tasks=SMOOTH_MPI_TASKS,
+        mpi=SMOOTH_MPI_RESOURCE,
+        mem_mb_per_cpu=SMOOTH_MEM_MB_PER_CPU,
+        gpu=SIMULATION_GPU_COUNT,
+        tasks_per_gpu=SIMULATION_TASKS_PER_GPU,
+        cpus_per_gpu=SIMULATION_CPUS_PER_GPU,
+        constraint=SIMULATION_CONSTRAINT,
+        slurm_extra=SIMULATION_SLURM_EXTRA
         #mem_mb=(default for now) mb means megabyte
         #slurm_partition=(default for now)
         # see https://snakemake.github.io/snakemake-plugin-catalog/plugins/executor/slurm.html
@@ -42,7 +60,7 @@ rule run_smooth_vortex:
         cd {params.rundir}
         rm -f {output.dat}
 
-        {resources.mpi} -n {resources.tasks} {config[athenapk_mpi]} -i {SMOOTH[input]} \
+        {params.launcher} {config[athenapk_mpi]} -i {SMOOTH[input]} \
           parthenon/job/problem_id={params.problem_id} \
           parthenon/mesh/nx1={wildcards.N} \
           parthenon/mesh/nx2={wildcards.N} \
@@ -51,7 +69,7 @@ rule run_smooth_vortex:
           parthenon/meshblock/nx1={params.nx1_mb} \
           parthenon/meshblock/nx2={params.nx2_mb} \
           parthenon/meshblock/nx3=1 \
-          parthenon/time/tlim=14.0 \
+          parthenon/time/tlim=10.0 \
           parthenon/time/cfl=0.3 \
           parthenon/time/integrator={config[integrator]} \
           hydro/fluid={wildcards.fluid} \

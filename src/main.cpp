@@ -2,6 +2,7 @@
 // Copyright (c) 2020-2021, Athena Parthenon Collaboration. All rights reserved.
 // Licensed under the 3-Clause License (the "LICENSE");
 
+#include <iostream>
 #include <sstream>
 
 // Parthenon headers
@@ -160,8 +161,23 @@ int main(int argc, char *argv[]) {
 
   // Startup the corresponding driver for the integrator
   if (parthenon::Globals::my_rank == 0) {
+    std::cout << "AthenaPK run configuration:\n"
+              << "  fluid: " << pman.pinput->GetString("hydro", "fluid") << "\n"
+              << "  riemann solver: "
+              << pman.pinput->GetString("hydro", "riemann") << "\n"
+              << "  reconstruction: "
+              << pman.pinput->GetString("hydro", "reconstruction") << "\n"
+              << "  integrator: "
+              << pman.pinput->GetString("parthenon/time", "integrator") << "\n"
+              << "  convergence order: "
+              << pman.pinput->GetInteger("hydro", "convergence_order") << "\n"
+              << "  nghost: "
+              << pman.pinput->GetInteger("parthenon/mesh", "nghost") << "\n"
+              << "  uct_solver: "
+              << pman.pinput->GetString("hydro", "uct_solver") << "\n"
+              << std::endl;
     std::cout << "Starting up hydro driver" << std::endl;
-  }
+  } 
 
   // This needs to be scoped so that the driver object is destructed before Finalize
   {

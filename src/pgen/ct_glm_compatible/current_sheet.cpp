@@ -101,7 +101,7 @@ void ProblemGenerator(MeshBlock *pmb, ParameterInput *pin) {
     mhd_pgen_utils::PointConservedToCellAverage(
         pmb, u, evaluate_point_conserved);
     mhd_pgen_utils::VectorPotentialToFaceAverage(
-        pmb, u, Bface, evaluate_vector_potential, true);
+        pmb, Bface, evaluate_vector_potential, true);
 
     u_dev_face.DeepCopy(Bface);
   } else {

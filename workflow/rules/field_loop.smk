@@ -24,6 +24,8 @@ rule run_field_loop:
     log:
         out=f"{config['results_root']}/{config['dimension']}/{{fluid}}/{FIELD_LOOP['dirname']}/run.out",
         err=f"{config['results_root']}/{config['dimension']}/{{fluid}}/{FIELD_LOOP['dirname']}/run.err"
+    envmodules:
+        *SIMULATION_ENVMODULES
     params:
         outdir=lambda wc: field_loop_base_out(wc.fluid),
         rundir=lambda wc: f"{field_loop_base_out(wc.fluid)}/phdf-files",
@@ -37,7 +39,12 @@ rule run_field_loop:
         iprob=FIELD_LOOP_MESH["iprob"]
     resources:
         runtime=360,
-        mem_mb=10000
+        mem_mb=10000,
+        gpu=SIMULATION_GPU_COUNT,
+        tasks_per_gpu=SIMULATION_TASKS_PER_GPU,
+        cpus_per_gpu=SIMULATION_CPUS_PER_GPU,
+        constraint=SIMULATION_CONSTRAINT,
+        slurm_extra=SIMULATION_SLURM_EXTRA
         #nodes=1,
         #tasks=8,
         #mpi="srun",

@@ -22,14 +22,14 @@ refinement = none
 nghost = 2
 
 nx1 = 128
-x1min = -7.0
-x1max = 7.0
+x1min = -5.0
+x1max = 5.0
 ix1_bc = periodic
 ox1_bc = periodic
 
 nx2 = 128
-x2min = -7.0
-x2max = 7.0
+x2min = -5.0
+x2max = 5.0
 ix2_bc = periodic
 ox2_bc = periodic
 

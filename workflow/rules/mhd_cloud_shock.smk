@@ -29,6 +29,21 @@ MHD_CLOUD_SHOCK_NUM_BLOCKS = (
 MHD_CLOUD_SHOCK_MPI_TASKS = min(
     MHD_CLOUD_SHOCK["mpi_tasks"], MHD_CLOUD_SHOCK_NUM_BLOCKS
 )
+MHD_CLOUD_SHOCK_MPI_RESOURCE = (
+    "srun" if MHD_CLOUD_SHOCK_MPI_TASKS > 1 else False
+)
+MHD_CLOUD_SHOCK_LAUNCHER_MODE = MHD_CLOUD_SHOCK.get("launcher", "srun")
+if MHD_CLOUD_SHOCK_LAUNCHER_MODE not in ("direct", "srun"):
+    raise ValueError("mhd_cloud_shock launcher must be 'direct' or 'srun'")
+if MHD_CLOUD_SHOCK_LAUNCHER_MODE == "direct":
+    if MHD_CLOUD_SHOCK_MPI_TASKS != 1:
+        raise ValueError(
+            "mhd_cloud_shock launcher=direct requires mpi_tasks=1; "
+            "use launcher=srun for a multi-rank run"
+        )
+    MHD_CLOUD_SHOCK_LAUNCHER = ""
+else:
+    MHD_CLOUD_SHOCK_LAUNCHER = f"srun -n {MHD_CLOUD_SHOCK_MPI_TASKS}"
 
 if MHD_CLOUD_SHOCK["enabled"] and config["dimension"] != "3D":
     raise ValueError("mhd_cloud_shock is a three-dimensional test")
@@ -73,8 +88,7 @@ rule run_mhd_cloud_shock:
             f"{MHD_CLOUD_SHOCK['dirname']}/run.err"
         )
     envmodules:
-        "foss/2023a",
-        "HDF5/1.14.0-gompi-2023a"
+        *SIMULATION_ENVMODULES
     params:
         rundir=lambda wc: f"{mhd_cloud_shock_out(wc.fluid)}/phdf-files",
         problem_id=lambda wc: (
@@ -89,13 +103,19 @@ rule run_mhd_cloud_shock:
         mb_nx1=MHD_CLOUD_SHOCK_MB[0],
         mb_nx2=MHD_CLOUD_SHOCK_MB[1],
         mb_nx3=MHD_CLOUD_SHOCK_MB[2],
-        output_dt=MHD_CLOUD_SHOCK["output_dt"]
+        output_dt=MHD_CLOUD_SHOCK["output_dt"],
+        launcher=MHD_CLOUD_SHOCK_LAUNCHER
     resources:
-        runtime=720,
+        runtime=239,
         nodes=1,
         tasks=MHD_CLOUD_SHOCK_MPI_TASKS,
-        mpi="srun",
-        mem_mb_per_cpu=MHD_CLOUD_SHOCK["mem_mb_per_cpu"]
+        mpi=MHD_CLOUD_SHOCK_MPI_RESOURCE,
+        mem_mb_per_cpu=MHD_CLOUD_SHOCK["mem_mb_per_cpu"],
+        gpu=SIMULATION_GPU_COUNT,
+        tasks_per_gpu=SIMULATION_TASKS_PER_GPU,
+        cpus_per_gpu=SIMULATION_CPUS_PER_GPU,
+        constraint=SIMULATION_CONSTRAINT,
+        slurm_extra=SIMULATION_SLURM_EXTRA
     shell:
         """
         mkdir -p {params.rundir}
@@ -105,7 +125,7 @@ rule run_mhd_cloud_shock:
         rm -f {output.done}
         cd {params.rundir}
 
-        {resources.mpi} -n {resources.tasks} {input.exe} -i {input.deck} \
+        {params.launcher} {input.exe} -i {input.deck} \
           parthenon/job/problem_id={params.problem_id} \
           parthenon/mesh/nx1={params.nx1} \
           parthenon/mesh/nx2={params.nx2} \

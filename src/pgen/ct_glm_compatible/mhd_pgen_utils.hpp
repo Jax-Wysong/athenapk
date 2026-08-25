@@ -100,9 +100,9 @@ void ReconcileSelfPeriodicFaces(MeshBlock *pmb, BfaceHost &Bface) {
 //! \brief Evaluate an analytic point-conserved state and construct cell averages.
 //!
 //! The evaluator must return a state indexable from IDN through IB3 and must construct
-//! total energy from the complete pointwise state. Only the finite-volume hydro
-//! components IDN through IEN are written here; magnetic components are supplied by the
-//! vector-potential initialization below.
+//! total energy from the complete pointwise state. All conserved components are
+//! converted to fourth-order cell averages here. The vector-potential initialization
+//! below independently constructs the divergence-free face-averaged magnetic field.
 
 template <typename ConsHost, typename PointConsEvaluator>
 void PointConservedToCellAverage(MeshBlock *pmb, ConsHost &u,
@@ -139,7 +139,7 @@ void PointConservedToCellAverage(MeshBlock *pmb, ConsHost &u,
   for (int k = kb.s; k <= kb.e; ++k) {
     for (int j = jb.s; j <= jb.e; ++j) {
       for (int i = ib.s; i <= ib.e; ++i) {
-        for (int n = IDN; n <= IEN; ++n) {
+        for (int n = IDN; n <= IB3; ++n) {
           const Real dx_q = u_point(n, k, j, i - 1) -
                             2.0 * u_point(n, k, j, i) +
                             u_point(n, k, j, i + 1);
@@ -163,15 +163,15 @@ void PointConservedToCellAverage(MeshBlock *pmb, ConsHost &u,
 }
 
 //----------------------------------------------------------------------------------------
-//! \brief Construct line-averaged edge A, face-averaged B, and centered cons B.
+//! \brief Construct line-averaged edge A and divergence-free face-averaged B.
 //!
 //! The evaluator must return {A1, A2, A3} at an arbitrary physical position. Applying
 //! the point-to-line-average formula along each edge before the discrete curl produces
 //! fourth-order face-area averages while preserving the discrete divergence constraint.
 
-template <typename ConsHost, typename BfaceHost, typename VectorPotentialEvaluator>
+template <typename BfaceHost, typename VectorPotentialEvaluator>
 void VectorPotentialToFaceAverage(
-    MeshBlock *pmb, ConsHost &u, BfaceHost &Bface,
+    MeshBlock *pmb, BfaceHost &Bface,
     VectorPotentialEvaluator &&evaluate_vector_potential,
     const bool reconcile_periodic_faces = false) {
   const IndexRange ib = pmb->cellbounds.GetBoundsI(IndexDomain::interior);
@@ -298,24 +298,10 @@ void VectorPotentialToFaceAverage(
     ReconcileSelfPeriodicFaces(pmb, Bface);
   }
 
-  // Match the cell-centered magnetic representation reconstructed by AthenaPK's
-  // runtime CT FillDerived path. In 2D, B3 is a cell-area average obtained directly
-  // from the line-averaged in-plane vector potential.
-  for (int k = kb.s; k <= kb.e; ++k) {
-    for (int j = jb.s; j <= jb.e; ++j) {
-      for (int i = ib.s; i <= ib.e; ++i) {
-        u(IB1, k, j, i) =
-            0.5 * (bx_face(k, j, i) + bx_face(k, j, i + 1));
-        u(IB2, k, j, i) =
-            0.5 * (by_face(k, j, i) + by_face(k, j + 1, i));
-        u(IB3, k, j, i) =
-            reduced_dimensional
-                ? (ay(k, j, i + 1) - ay(k, j, i)) / coords.Dxc<1>(i) -
-                      (ax(k, j + 1, i) - ax(k, j, i)) / coords.Dxc<2>(j)
-                : 0.5 * (bz_face(k, j, i) + bz_face(k + 1, j, i));
-      }
-    }
-  }
+  // Do not derive cell-centered magnetic fields here. The caller has already
+  // initialized their true volume averages with PointConservedToCellAverage().
+  // During evolution, Teissier's CT FillDerived path reconstructs the corresponding
+  // fourth-order cell averages from these divergence-free face averages.
 }
 
 //----------------------------------------------------------------------------------------
@@ -331,7 +317,7 @@ void InitializeFourthOrderSmoothMHD(
   PointConservedToCellAverage(
       pmb, u, std::forward<PointConsEvaluator>(evaluate_point_cons));
   VectorPotentialToFaceAverage(
-      pmb, u, Bface,
+      pmb, Bface,
       std::forward<VectorPotentialEvaluator>(evaluate_vector_potential),
       reconcile_periodic_faces);
 }

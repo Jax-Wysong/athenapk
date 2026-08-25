@@ -24,6 +24,8 @@ rule run_linear_wave:
     log:
         out=f"{config['results_root']}/{config['dimension']}/{{fluid}}/{LIN_WAVE['dirname']}/wave_{{wave}}/runs/N{{N}}/run.out",
         err=f"{config['results_root']}/{config['dimension']}/{{fluid}}/{LIN_WAVE['dirname']}/wave_{{wave}}/runs/N{{N}}/run.err"
+    envmodules:
+        *SIMULATION_ENVMODULES
     params:
         outdir=lambda wildcards: linear_wave_out(wildcards.fluid),
         rundir=lambda wildcards: f"{linear_wave_out(wildcards.fluid)}/wave_{wildcards.wave}/runs/N{wildcards.N}",
@@ -37,7 +39,12 @@ rule run_linear_wave:
         ang_2=lambda wc: LIN_WAVE["mesh"]["2D"]["ang_2"] if config["dimension"] == "2D" else -999.9
     resources:
         runtime=120,
-        mem_mb=4000
+        mem_mb=4000,
+        gpu=SIMULATION_GPU_COUNT,
+        tasks_per_gpu=SIMULATION_TASKS_PER_GPU,
+        cpus_per_gpu=SIMULATION_CPUS_PER_GPU,
+        constraint=SIMULATION_CONSTRAINT,
+        slurm_extra=SIMULATION_SLURM_EXTRA
         #mpi="srun",
         #nodes=1,
         #tasks=1,

@@ -29,7 +29,7 @@ void WENO5JS(const Real &q_im2, const Real &q_im1, const Real &q_i, const Real &
            const Real &q_ip2, Real &ql_ip1, Real &qr_i) {
   // Smooth WENO weights: Note that these are from Del Zanna et al. 2007 (A.18)
   
-  const Real epsilon = 1E-26;
+  constexpr Real epsilon_is = 1.0e-6;
 
   Real beta[3]; // (2.63) 
   beta[0] = (13.0/12.0)*SQR(q_i - 2*q_ip1 + q_ip2) + (1.0/4.0)*SQR(3*q_i - 4*q_ip1 + q_ip2);
@@ -37,9 +37,9 @@ void WENO5JS(const Real &q_im2, const Real &q_im1, const Real &q_i, const Real &
   beta[2] = (13.0/12.0)*SQR(q_im2 - 2*q_im1 + q_i) + (1.0/4.0)*SQR(q_im2 - 4*q_im1 + 3*q_i);
 
   Real indicator[3]; // fraction part of (2.59) 
-  indicator[0] = 1 / SQR(epsilon + beta[0]);
-  indicator[1] = 1 / SQR(epsilon + beta[1]);
-  indicator[2] = 1 / SQR(epsilon + beta[2]);
+  indicator[0] = 1 / SQR(epsilon_is + beta[0]);
+  indicator[1] = 1 / SQR(epsilon_is + beta[1]);
+  indicator[2] = 1 / SQR(epsilon_is + beta[2]);
 
   // compute qL_ip1
   Real f[3]; // polynomial based on constants c_{r,j} in Table 2.1 
@@ -49,9 +49,9 @@ void WENO5JS(const Real &q_im2, const Real &q_im1, const Real &q_i, const Real &
   f[2] =  2*q_im2 - 7*q_im1 + 11*q_i;
 
   Real alpha[3];
-  alpha[0] = 0.3 * (1.0 + SQR(indicator[0]));
-  alpha[1] = 0.6 * (1.0 + SQR(indicator[1]));
-  alpha[2] = 0.1 * (1.0 + SQR(indicator[2]));
+  alpha[0] = 0.3 * indicator[0];
+  alpha[1] = 0.6 * indicator[1];
+  alpha[2] = 0.1 * indicator[2];
 
   // ENO Weights
   // alpha[0] = 0.3;
@@ -68,9 +68,9 @@ void WENO5JS(const Real &q_im2, const Real &q_im1, const Real &q_i, const Real &
   f[1] = -1*q_ip1 + 5*q_i   + 2*q_im1;
   f[2] =  2*q_ip2 - 7*q_ip1 + 11*q_i;
 
-  alpha[0] = 0.3 * (1.0 + SQR(indicator[2]));
-  alpha[1] = 0.6 * (1.0 + SQR(indicator[1]));
-  alpha[2] = 0.1 * (1.0 + SQR(indicator[0]));
+  alpha[0] = 0.3 * indicator[2];
+  alpha[1] = 0.6 * indicator[1];
+  alpha[2] = 0.1 * indicator[0];
 
   alpha_sum = 6.0 * (alpha[0] + alpha[1] + alpha[2]);
 

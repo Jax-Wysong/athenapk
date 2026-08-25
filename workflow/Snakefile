@@ -36,6 +36,27 @@ def output_variable_list(test, default=("prim",)):
     return ",".join(variables)
 
 
+# Configure where simulation kernels execute independently of the numerical
+# method. CPU configurations inherit the historical module stack and request no
+# GPU; diagnostics remain ordinary CPU jobs in either case.
+EXECUTION = config.get("execution", {})
+SIMULATION_ENVMODULES = EXECUTION.get(
+    "envmodules", ["foss/2023a", "HDF5/1.14.0-gompi-2023a"]
+)
+SIMULATION_GPU_COUNT = int(EXECUTION.get("gpus", 0))
+SIMULATION_TASKS_PER_GPU = int(EXECUTION.get("tasks_per_gpu", 1))
+SIMULATION_CPUS_PER_GPU = int(EXECUTION.get("cpus_per_gpu", 1))
+SIMULATION_CONSTRAINT = EXECUTION.get("constraint")
+SIMULATION_SLURM_EXTRA = EXECUTION.get("slurm_extra", "")
+
+if SIMULATION_GPU_COUNT < 0:
+    raise ValueError("execution/gpus cannot be negative")
+if SIMULATION_TASKS_PER_GPU < 1:
+    raise ValueError("execution/tasks_per_gpu must be positive")
+if SIMULATION_CPUS_PER_GPU < 1:
+    raise ValueError("execution/cpus_per_gpu must be positive")
+
+
 for executable_key in ("athenapk", "athenapk_mpi", "athenapk_mpi_hdf5"):
     if executable_key in config:
         config[executable_key] = repo_path(config[executable_key])

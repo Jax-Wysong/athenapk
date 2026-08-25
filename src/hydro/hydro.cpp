@@ -408,11 +408,28 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
   // branches relax this requirement when they add their numerical method.
   const int convergence_order =
       pin->GetOrAddInteger("hydro", "convergence_order", 2);
-  PARTHENON_REQUIRE(
-      convergence_order == 2,
-      "AthenaPK hydro: the fourth-order common branch only provides second-order "
-      "evolution. A fourth-order scheme branch must enable convergence_order=4.")
   pkg->AddParam<>("convergence_order", convergence_order);
+  if (convergence_order != 2 && convergence_order != 4){
+    PARTHENON_FAIL("Convergence_order must be either 2 or 4");
+  }
+  if (convergence_order == 4 && fluid != Fluid::ucthlldmhd){
+    PARTHENON_FAIL("4th order convergence route currently only supports fluid::ucthlldmhd");
+  }
+  auto uct_solver =
+      pin->GetOrAddString("hydro", "uct_solver", "none");
+  pkg->AddParam<>("uct_solver", uct_solver);
+  if (uct_solver == "hlld_line") {
+    PARTHENON_FAIL(
+        "The hlld_line UCT route is not implemented yet.");
+  }
+  if (convergence_order == 4){
+    PARTHENON_REQUIRE(
+        uct_solver == "hlld_point" || uct_solver == "llf_line",
+        "The current fourth-order Teissier route requires "
+        "hydro/uct_solver=hlld_point or hydro/uct_solver=llf_line.");
+  }
+
+
 
   // Following params should (currently) be present independent of solver because
   // they're all used in the main loop.
@@ -467,8 +484,13 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
   auto riemann = RiemannSolver::undefined;
   if (riemann_str == "llf") {
     riemann = RiemannSolver::llf;
-    PARTHENON_REQUIRE(recon == Reconstruction::dc,
-                      "LLF Riemann solver only implemented with DC reconstruction.")
+    const bool teissier_llf_line =
+        fluid == Fluid::ucthlldmhd && convergence_order == 4 &&
+        uct_solver == "llf_line" && recon == Reconstruction::weno5js;
+    PARTHENON_REQUIRE(
+        recon == Reconstruction::dc || teissier_llf_line,
+        "LLF Riemann solver only supports DC reconstruction, except for the "
+        "fourth-order Teissier llf_line route with WENO5JS reconstruction.")
   } else if (riemann_str == "hlle") {
     riemann = RiemannSolver::hlle;
   } else if (riemann_str == "hllc") {
@@ -494,13 +516,25 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
         "AthenaPK hydro: ctmhd currently only supports PLM reconstruction "
         "with HLLD Riemann solves ");
   }
-  if (fluid == Fluid::ucthlldmhd &&
-      ((recon != Reconstruction::plm && recon != Reconstruction::weno3) ||
-       riemann != RiemannSolver::hlld)) {
-    PARTHENON_FAIL(
-        "AthenaPK hydro: ucthlldmhd currently only supports PLM or WENO3 "
-        "reconstruction "
-        "and requires HLLD Riemann solves ");
+  if (fluid == Fluid::ucthlldmhd) {
+    if (convergence_order == 2 &&
+        ((recon != Reconstruction::plm && recon != Reconstruction::weno3) ||
+         riemann != RiemannSolver::hlld)) {
+      PARTHENON_FAIL(
+          "AthenaPK hydro: second-order ucthlldmhd supports PLM or WENO3 "
+          "reconstruction and requires HLLD Riemann solves.");
+    }
+    if (convergence_order == 4) {
+      const bool valid_riemann_uct_pair =
+          (uct_solver == "hlld_point" && riemann == RiemannSolver::hlld) ||
+          (uct_solver == "llf_line" && riemann == RiemannSolver::llf);
+      PARTHENON_REQUIRE(
+          recon == Reconstruction::weno5js && valid_riemann_uct_pair,
+          "AthenaPK hydro: the fourth-order Teissier route requires WENO5JS "
+          "reconstruction and one of the matched solver pairs "
+          "riemann=hlld/uct_solver=hlld_point or "
+          "riemann=llf/uct_solver=llf_line.");
+    }
   }
 
   // Set calculation of hyperbolic timestep. Input file option takes precedence.
@@ -552,6 +586,10 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
   // Second-order UCT-HLLD options.
   add_flux_fun<Fluid::ucthlldmhd, Reconstruction::plm, RiemannSolver::hlld>(flux_functions);
   add_flux_fun<Fluid::ucthlldmhd, Reconstruction::weno3, RiemannSolver::hlld>(flux_functions);
+  // The Teissier driver bypasses this function pointer with its split
+  // reconstruction/AtoP/Riemann tasks, but registering the selected input tuple keeps
+  // package initialization and the common flux-function lookup well-defined.
+  add_flux_fun<Fluid::ucthlldmhd, Reconstruction::weno5js, RiemannSolver::hlld>(flux_functions);
 
   // Add first order recon with LLF fluxes (implemented for testing as tight loop)
   flux_functions[std::make_tuple(Fluid::euler, Reconstruction::dc, RiemannSolver::llf)] =
@@ -561,7 +599,12 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
 
   // flux used in all stages except the first. First stage is set below based on integr.
   FluxFun_t *flux_other_stage = nullptr;
-  flux_other_stage = flux_functions.at(std::make_tuple(fluid, recon, riemann));
+  const bool teissier4 =
+      fluid == Fluid::ucthlldmhd && convergence_order == 4;
+  if (!teissier4) {
+    flux_other_stage =
+        flux_functions.at(std::make_tuple(fluid, recon, riemann));
+  }
 
   parthenon::HstVar_list hst_vars = {};
   hst_vars.emplace_back(HistoryOutputVar(parthenon::UserHistoryOperation::sum,
@@ -595,6 +638,11 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
   if (nghost < recon_need_nghost) {
     PARTHENON_FAIL("AthenaPK hydro: Need more ghost zones for chosen reconstruction.");
   }
+  if (convergence_order == 4) {
+    PARTHENON_REQUIRE(
+        nghost >= 3,
+        "The fourth-order Teissier route requires at least three ghost zones.");
+  }
 
   const auto integrator_str = pin->GetString("parthenon/time", "integrator");
   auto integrator = Integrator::undefined;
@@ -611,8 +659,10 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
   } else if (integrator_str == "vl2") {
     integrator = Integrator::vl2;
     // override first stage (predictor) to first order
-    flux_first_stage =
-        flux_functions.at(std::make_tuple(fluid, Reconstruction::dc, riemann));
+    if (!teissier4) {
+      flux_first_stage =
+          flux_functions.at(std::make_tuple(fluid, Reconstruction::dc, riemann));
+    }
   }
   pkg->AddParam<>("integrator", integrator);
   pkg->AddParam<FluxFun_t *>("flux_first_stage", flux_first_stage);
@@ -627,6 +677,16 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
       "AthenaPK hydro: first_order_flux_correct is not currently supported with "
       "ctmhd, ucthlldmhd, or RK4 time stepping.");
   pkg->AddParam<>("first_order_flux_correct", first_order_flux_correct);
+  if (convergence_order == 4) {
+    const auto mesh_refinement =
+        pin->GetOrAddString("parthenon/mesh", "refinement", "none");
+    PARTHENON_REQUIRE(
+        mesh_refinement == "none",
+        "The fourth-order Teissier route currently supports uniform meshes only.");
+    PARTHENON_REQUIRE(
+        !first_order_flux_correct,
+        "The fourth-order Teissier route does not support first-order flux correction.");
+  }
   if (first_order_flux_correct) {
     if (fluid == Fluid::euler) {
       pkg->AddParam<FirstOrderFluxCorrectFun_t *>("first_order_flux_correct_fun",
@@ -956,6 +1016,15 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
     uct_aux_labels[VBART2] = "second_transverse_vel";
   }
 
+  std::vector<std::string> teissier_eface_labels(4);
+  if (fluid == Fluid::ucthlldmhd && convergence_order == 4 &&
+      uct_solver == "llf_line") {
+    teissier_eface_labels[ELEFT_T1]  = "left-side first transverse EMF";
+    teissier_eface_labels[ELEFT_T2]  = "left-side second transverse EMF";
+    teissier_eface_labels[ERIGHT_T1] = "right-side first transverse EMF";
+    teissier_eface_labels[ERIGHT_T2] = "right-side second transverse EMF";
+  }
+
   for (auto i = 0; i < nscalars; i++) {
     cons_labels.emplace_back("scalar_density_" + std::to_string(i));
     prim_labels.emplace_back("scalar_" + std::to_string(i));
@@ -990,9 +1059,10 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
     pkg->AddField("Bface", m);
   }
 
-  if (fluid == Fluid::ucthlldmhd){
+  if (fluid == Fluid::ucthlldmhd && riemann == RiemannSolver::hlld){
     Metadata uct_m(
-        {Metadata::Face, Metadata::Derived, Metadata::OneCopy},
+        {Metadata::Face, Metadata::Derived, Metadata::OneCopy,
+         Metadata::FillGhost},
         std::vector<int>{nuct_hlld_aux}, // doing Metadata::Face automatically gives us 3 face vectors, while putting a number here gives us the number of quantities per face to save
         uct_aux_labels);
 
@@ -1005,6 +1075,72 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
       // uct_hlld(TE::F1, VBART2, ...)  uct_hlld(TE::F2, VBART2, ...)   uct_hlld(TE::F3, VBART2, ...)
       // and derived and saved during the hlld Riemann solve
     pkg->AddField("uct_hlld", uct_m);
+  }
+
+
+
+  // setup storage for area-averaged L/R interface values
+  if (fluid == Fluid::ucthlldmhd && convergence_order > 2){
+    Metadata m(
+        {Metadata::Face, Metadata::Derived},
+        std::vector<int>({nhydro + nscalars}), cons_labels);
+    pkg->AddField("face_avg_left", m);
+    pkg->AddField("face_avg_right", m);
+
+    // Point-valued face fluxes produced by the Riemann solver. These must be
+    // kept separate from cons.flux so that the transverse point-to-area
+    // stencil has an immutable input while writing the final area averages.
+    Metadata point_flux_m(
+        {Metadata::Face, Metadata::Derived, Metadata::OneCopy,
+         Metadata::FillGhost},
+        std::vector<int>({nhydro + nscalars}), cons_labels);
+    pkg->AddField("consflux_point", point_flux_m);
+
+    if (uct_solver == "hlld_point"){
+      // gives us 3 face vectors which we will use for the Bface point values
+      //             Bx-face                By-face                 Bz-face
+      // Bface_point(TE::F1, 0), Bface_point(TE::F2, 0), Bface_point(TE::F3, 0)
+      // and fluxes which we fill with the point-valued edge EMFs
+      Metadata bfpoint_m(
+                        {Metadata::Face, Metadata::Derived, Metadata::OneCopy,
+                        Metadata::WithFluxes, Metadata::FillGhost}
+      );
+      pkg->AddField("Bface_point", bfpoint_m);
+    } else if (uct_solver == "llf_line"){
+      // stores the face LLF speed af needed for EMF edge construction formula Teissier Eqs. (50 - 51)
+      // gives us 3 face vectors
+      //             ax-face                ay-face                 az-face
+      //            (TE::F1, 0),          (TE::F2, 0),            (TE::F3, 0)
+      Metadata teissier_llf_speed_m(
+          {Metadata::Face, Metadata::Derived, Metadata::OneCopy,
+           Metadata::FillGhost});
+      pkg->AddField("teissier_llf_speed", teissier_llf_speed_m);
+
+      // for two transverse E-field components for both L/R face states (point-valued storage)
+      // teissier_eface_point(TE::F1, ELEFT_T1, ...)      teissier_eface_point(TE::F2, ELEFT_T1, ...)       teissier_eface_point(TE::F3, ELEFT_T1, ...)
+      // teissier_eface_point(TE::F1, ELEFT_T2, ...)      teissier_eface_point(TE::F2, ELEFT_T2, ...)       teissier_eface_point(TE::F3, ELEFT_T2, ...)
+      // teissier_eface_point(TE::F1, ERIGHT_T1, ...)     teissier_eface_point(TE::F2, ERIGHT_T1, ...)      teissier_eface_point(TE::F3, ERIGHT_T1, ...)
+      // teissier_eface_point(TE::F1, ERIGHT_T2, ...)     teissier_eface_point(TE::F2, ERIGHT_T2, ...)      teissier_eface_point(TE::F3, ERIGHT_T2, ...)
+                          // | Face |    T1   |    T2   |
+                          // |------|---------|---------|
+                          // | F1   |   E_y   |   E_z   |
+                          // | F2   |   E_z   |   E_x   |
+                          // | F3   |   E_x   |   E_y   |
+      Metadata teissier_eface_point_m(
+          {Metadata::Face, Metadata::Derived, Metadata::OneCopy,
+           Metadata::FillGhost},
+          std::vector<int>{4},
+          teissier_eface_labels);
+      pkg->AddField("teissier_eface_point", teissier_eface_point_m);
+
+      // similarly for the face EMF averages
+      Metadata teissier_eface_avg_m(
+          {Metadata::Face, Metadata::Derived, Metadata::OneCopy,
+           Metadata::FillGhost},
+          std::vector<int>{4},
+          teissier_eface_labels);
+      pkg->AddField("teissier_eface_avg", teissier_eface_avg_m);
+    }
   }
 
   const auto refine_str = pin->GetOrAddString("refinement", "type", "unset");
@@ -1301,6 +1437,7 @@ TaskStatus CalculateFluxes(std::shared_ptr<MeshData<Real>> &md) {
       jl = jb.s - 1, ju = jb.e + 1, kl = kb.s - 1, ku = kb.e + 1;
   }
 
+  // stencil needs to be a bit wider for uct-auxilliary variables
   if (fluid == Fluid::ucthlldmhd){
     if (pmb->block_size.nx(X2DIR) > 1) {
       if (pmb->block_size.nx(X3DIR) == 1) // 2D
@@ -1353,6 +1490,14 @@ TaskStatus CalculateFluxes(std::shared_ptr<MeshData<Real>> &md) {
       DEFAULT_OUTER_LOOP_PATTERN, "x1 flux", DevExecSpace(), scratch_size_in_bytes,
       scratch_level, 0, cons_in.GetDim(5) - 1, kl, ku, jl, ju,
       KOKKOS_LAMBDA(parthenon::team_mbr_t member, const int b, const int k, const int j) {
+        // Force captures outside compile-time branches for NVCC extended-lambda
+        // compatibility. Solver-specific packs remain shallow and are only
+        // dereferenced by the matching specialization.
+        (void)Bface_pack;
+        (void)uct_hlld_pack;
+        (void)riemann;
+        (void)eos;
+        (void)c_h;
         const auto &prim = prim_in(b);
         auto &cons = cons_in(b);
         parthenon::ScratchPad2D<Real> wl(member.team_scratch(scratch_level),
@@ -1375,7 +1520,8 @@ TaskStatus CalculateFluxes(std::shared_ptr<MeshData<Real>> &md) {
 
         if constexpr (fluid == Fluid::ucthlldmhd) {
           auto &uct_hlld = uct_hlld_pack(b);
-          riemann.Solve(member, k, j, ib.s, ib.e+1, IV1, wl, wr, cons, uct_hlld, eos, c_h);
+          riemann.template Solve<false>(member, k, j, ib.s, ib.e+1, IV1, wl, wr,
+                                        cons, uct_hlld, eos, c_h);
         } else {
           riemann.Solve(member, k, j, ib.s, ib.e+1, IV1, wl, wr, cons, eos, c_h);
         }
@@ -1417,6 +1563,11 @@ TaskStatus CalculateFluxes(std::shared_ptr<MeshData<Real>> &md) {
         DEFAULT_OUTER_LOOP_PATTERN, "x2 flux", DevExecSpace(), scratch_size_in_bytes,
         scratch_level, 0, cons_in.GetDim(5) - 1, kl, ku,
         KOKKOS_LAMBDA(parthenon::team_mbr_t member, const int b, const int k) {
+          (void)Bface_pack;
+          (void)uct_hlld_pack;
+          (void)riemann;
+          (void)eos;
+          (void)c_h;
           const auto &prim = prim_in(b);
           auto &cons = cons_in(b);
           parthenon::ScratchPad2D<Real> wl(member.team_scratch(scratch_level),
@@ -1442,7 +1593,8 @@ TaskStatus CalculateFluxes(std::shared_ptr<MeshData<Real>> &md) {
               }
               if constexpr (fluid == Fluid::ucthlldmhd) {
                 auto &uct_hlld = uct_hlld_pack(b);
-                riemann.Solve(member, k, j, il, iu, IV2, wl, wr, cons, uct_hlld, eos, c_h);
+                riemann.template Solve<false>(member, k, j, il, iu, IV2, wl, wr,
+                                              cons, uct_hlld, eos, c_h);
               } else {
                 riemann.Solve(member, k, j, il, iu, IV2, wl, wr, cons, eos, c_h);
               }member.team_barrier();
@@ -1481,6 +1633,11 @@ TaskStatus CalculateFluxes(std::shared_ptr<MeshData<Real>> &md) {
         DEFAULT_OUTER_LOOP_PATTERN, "x3 flux", DevExecSpace(), scratch_size_in_bytes,
         scratch_level, 0, cons_in.GetDim(5) - 1, jl, ju,
         KOKKOS_LAMBDA(parthenon::team_mbr_t member, const int b, const int j) {
+          (void)Bface_pack;
+          (void)uct_hlld_pack;
+          (void)riemann;
+          (void)eos;
+          (void)c_h;
           const auto &prim = prim_in(b);
           auto &cons = cons_in(b);
           parthenon::ScratchPad2D<Real> wl(member.team_scratch(scratch_level),
@@ -1506,7 +1663,8 @@ TaskStatus CalculateFluxes(std::shared_ptr<MeshData<Real>> &md) {
               }
               if constexpr (fluid == Fluid::ucthlldmhd) {
                 auto &uct_hlld = uct_hlld_pack(b);
-                riemann.Solve(member, k, j, il, iu, IV3, wl, wr, cons, uct_hlld, eos, c_h);
+                riemann.template Solve<false>(member, k, j, il, iu, IV3, wl, wr,
+                                              cons, uct_hlld, eos, c_h);
               } else {
                 riemann.Solve(member, k, j, il, iu, IV3, wl, wr, cons, eos, c_h);
               }

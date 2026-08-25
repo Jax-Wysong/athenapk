@@ -30,6 +30,8 @@ MHD_BLAST_NUM_BLOCKS = (
     * ((MHD_BLAST_RESOLUTION[2] + MHD_BLAST_MB[2] - 1) // MHD_BLAST_MB[2])
 )
 MHD_BLAST_MPI_TASKS = min(MHD_BLAST["mpi_tasks"], MHD_BLAST_NUM_BLOCKS)
+MHD_BLAST_MPI_RESOURCE = "srun" if MHD_BLAST_MPI_TASKS > 1 else False
+MHD_BLAST_LAUNCHER = f"srun -n {MHD_BLAST_MPI_TASKS}"
 
 if MHD_BLAST["enabled"] and config["dimension"] != "3D":
     raise ValueError("mhd_blast is a three-dimensional test")
@@ -77,8 +79,7 @@ rule run_mhd_blast:
             f"{MHD_BLAST['dirname']}/run.err"
         )
     envmodules:
-        "foss/2023a",
-        "HDF5/1.14.0-gompi-2023a"
+        *SIMULATION_ENVMODULES
     params:
         rundir=lambda wc: f"{mhd_blast_out(wc.fluid)}/phdf-files",
         problem_id=lambda wc: (
@@ -93,13 +94,19 @@ rule run_mhd_blast:
         mb_nx2=MHD_BLAST_MB[1],
         mb_nx3=MHD_BLAST_MB[2],
         tlim=MHD_BLAST["tlim"],
-        output_dt=MHD_BLAST["output_dt"]
+        output_dt=MHD_BLAST["output_dt"],
+        launcher=MHD_BLAST_LAUNCHER
     resources:
         runtime=720,
         nodes=1,
         tasks=MHD_BLAST_MPI_TASKS,
-        mpi="srun",
-        mem_mb_per_cpu=MHD_BLAST["mem_mb_per_cpu"]
+        mpi=MHD_BLAST_MPI_RESOURCE,
+        mem_mb_per_cpu=MHD_BLAST["mem_mb_per_cpu"],
+        gpu=SIMULATION_GPU_COUNT,
+        tasks_per_gpu=SIMULATION_TASKS_PER_GPU,
+        cpus_per_gpu=SIMULATION_CPUS_PER_GPU,
+        constraint=SIMULATION_CONSTRAINT,
+        slurm_extra=SIMULATION_SLURM_EXTRA
     shell:
         """
         mkdir -p {params.rundir}
@@ -109,7 +116,7 @@ rule run_mhd_blast:
         rm -f {output.done}
         cd {params.rundir}
 
-        {resources.mpi} -n {resources.tasks} {input.exe} -i {input.deck} \
+        {params.launcher} {input.exe} -i {input.deck} \
           job/problem_id=mhd_blast \
           parthenon/job/problem_id={params.problem_id} \
           parthenon/mesh/nx1={params.nx1} \

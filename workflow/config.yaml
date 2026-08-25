@@ -7,6 +7,16 @@ athenapk: build-host/bin/athenaPK
 athenapk_mpi: build-mpi/bin/athenaPK
 athenapk_mpi_hdf5: build-mpi-site-hdf5/bin/athenaPK
 
+# Simulation rules can be moved to GPUs by overriding this block. Post-processing
+# rules remain CPU jobs. A value of zero preserves the historical CPU behavior.
+execution:
+  envmodules: [foss/2023a, HDF5/1.14.0-gompi-2023a]
+  gpus: 0
+  tasks_per_gpu: 1
+  cpus_per_gpu: 1
+  constraint: null
+  slurm_extra: ""
+
 results_root: workflow-results
 scheme_id: common
 report_description: report/workflow.rst
@@ -152,6 +162,12 @@ tests:
     plotting_script: workflow/diagnostics_scripts/orszag_tang_video.py
     resolution: [128, 128]
     meshblock: [128, 128]
+    nodes: 1
+    mpi_tasks: 1
+    mem_mb_per_cpu: 10000
+    runtime: 120
+    diagnostic_mem_mb: 4000
+    diagnostic_runtime: 60
 
   current_sheet:
     enabled: false

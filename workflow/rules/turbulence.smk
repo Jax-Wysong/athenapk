@@ -18,9 +18,15 @@ TURBULENCE_DEFAULTS = {
     "tlim": 60.0,
     "history_dt": 0.1,
     "output_dt": 0.5,
+    # Default simulation wall time in minutes. Individual numerical cases may
+    # override this with their own `runtime` entry.
+    "runtime": 4320,
     # Optional, case-specific Parthenon restart files. Cases not listed here start
     # from the input deck as usual.
     "restart_from": {},
+    # If enabled, an incomplete run resumes from the newest restart file already
+    # present in its output directory. Explicit restart_from entries take precedence.
+    "auto_restart": False,
     "cases": {
         "glm_weno3js": {
             "label": "AthenaPK WENO3",
@@ -47,7 +53,7 @@ TURBULENCE_DEFAULTS = {
             "fluid": "ucthlldmhd",
             "riemann": "hlld",
             "reconstruction": "weno3",
-            "integrator": "rk2",
+            "integrator": "rk3",
             "convergence_order": 2,
             "first_order_flux_correct": False,
             "nghost": 2,
@@ -85,7 +91,21 @@ TURBULENCE_SPECTRA["flow_analysis_script"] = repo_path(
 )
 TURBULENCE_RESOLUTION = TURBULENCE["resolution"]
 TURBULENCE_MB = TURBULENCE["meshblock"]
-TURBULENCE_CASES = TURBULENCE["cases"]
+TURBULENCE_ALL_CASES = TURBULENCE["cases"]
+TURBULENCE_ENABLED_CASES = tuple(
+    TURBULENCE.get("enabled_cases", TURBULENCE_ALL_CASES)
+)
+unknown_enabled_cases = set(TURBULENCE_ENABLED_CASES).difference(
+    TURBULENCE_ALL_CASES
+)
+if unknown_enabled_cases:
+    raise ValueError(
+        "turbulence enabled_cases contains unknown cases: "
+        f"{sorted(unknown_enabled_cases)}"
+    )
+TURBULENCE_CASES = {
+    name: TURBULENCE_ALL_CASES[name] for name in TURBULENCE_ENABLED_CASES
+}
 TURBULENCE_CASE_NAMES = tuple(TURBULENCE_CASES)
 TURBULENCE_RESTART_FROM = TURBULENCE["restart_from"]
 TURBULENCE_OUTPUT_VARIABLES = output_variable_list(
@@ -138,6 +158,11 @@ for case_name, case in TURBULENCE_CASES.items():
     missing = required.difference(case)
     if missing:
         raise ValueError(f"turbulence case {case_name} is missing {sorted(missing)}")
+    case_runtime = int(case.get("runtime", TURBULENCE["runtime"]))
+    if case_runtime < 1:
+        raise ValueError(
+            f"turbulence case {case_name} runtime must be positive"
+        )
 
 TURBULENCE_NUM_BLOCKS = (
     ((TURBULENCE_RESOLUTION[0] + TURBULENCE_MB[0] - 1) // TURBULENCE_MB[0])
@@ -145,11 +170,24 @@ TURBULENCE_NUM_BLOCKS = (
     * ((TURBULENCE_RESOLUTION[2] + TURBULENCE_MB[2] - 1) // TURBULENCE_MB[2])
 )
 TURBULENCE_MPI_TASKS = min(TURBULENCE["mpi_tasks"], TURBULENCE_NUM_BLOCKS)
-if TURBULENCE["nodes"] < 1 or TURBULENCE["tasks_per_node"] < 1:
-    raise ValueError("turbulence nodes and tasks_per_node must be positive")
-if TURBULENCE_MPI_TASKS != TURBULENCE["nodes"] * TURBULENCE["tasks_per_node"]:
+TURBULENCE_MPI_RESOURCE = "srun" if TURBULENCE_MPI_TASKS > 1 else False
+TURBULENCE_LAUNCHER_MODE = TURBULENCE.get("launcher", "srun")
+if TURBULENCE_LAUNCHER_MODE not in ("direct", "srun"):
+    raise ValueError("turbulence launcher must be 'direct' or 'srun'")
+if TURBULENCE_LAUNCHER_MODE == "direct":
+    if TURBULENCE_MPI_TASKS != 1:
+        raise ValueError(
+            "turbulence launcher=direct requires mpi_tasks=1; "
+            "use launcher=srun for a multi-rank run"
+        )
+    TURBULENCE_LAUNCHER = ""
+else:
+    TURBULENCE_LAUNCHER = f"srun -n {TURBULENCE_MPI_TASKS}"
+if TURBULENCE["nodes"] < 1:
+    raise ValueError("turbulence nodes must be positive")
+if TURBULENCE_MPI_TASKS < TURBULENCE["nodes"]:
     raise ValueError(
-        "turbulence mpi_tasks must equal nodes * tasks_per_node and cannot exceed "
+        "turbulence mpi_tasks must be at least the node count and cannot exceed "
         "the number of meshblocks"
     )
 
@@ -212,8 +250,7 @@ rule run_turbulence:
     wildcard_constraints:
         case="|".join(re.escape(name) for name in TURBULENCE_CASE_NAMES)
     envmodules:
-        "foss/2023a",
-        "HDF5/1.14.0-gompi-2023a"
+        *SIMULATION_ENVMODULES
     params:
         rundir=lambda wc: f"{turbulence_run_out(wc.case)}/phdf-files",
         problem_id=lambda wc: turbulence_problem_id(wc.case),
@@ -253,21 +290,43 @@ rule run_turbulence:
         history_dt=TURBULENCE["history_dt"],
         output_dt=TURBULENCE["output_dt"],
         mpi_tasks=TURBULENCE_MPI_TASKS,
-        restart_arg=lambda wc: (
-            f"-r {shlex.quote(TURBULENCE_RESTART_FROM[wc.case])}"
-            if TURBULENCE_RESTART_FROM.get(wc.case)
-            else ""
-        )
+        launcher=TURBULENCE_LAUNCHER,
+        explicit_restart=lambda wc: shlex.quote(
+            TURBULENCE_RESTART_FROM.get(wc.case, "")
+        ),
+        auto_restart=str(TURBULENCE["auto_restart"]).lower()
     resources:
-        runtime=4320,
+        runtime=lambda wc: int(
+            TURBULENCE_CASES[wc.case].get("runtime", TURBULENCE["runtime"])
+        ),
         nodes=TURBULENCE["nodes"],
-        tasks_per_node=TURBULENCE["tasks_per_node"],
-        mpi="srun",
-        mem_mb_per_cpu=TURBULENCE["mem_mb_per_cpu"]
+        tasks=TURBULENCE_MPI_TASKS,
+        mpi=TURBULENCE_MPI_RESOURCE,
+        mem_mb_per_cpu=TURBULENCE["mem_mb_per_cpu"],
+        gpu=SIMULATION_GPU_COUNT,
+        tasks_per_gpu=SIMULATION_TASKS_PER_GPU,
+        cpus_per_gpu=SIMULATION_CPUS_PER_GPU,
+        constraint=SIMULATION_CONSTRAINT,
+        slurm_extra=SIMULATION_SLURM_EXTRA
     shell:
         """
         mkdir -p {params.rundir}
-        if [[ -z "{params.restart_arg}" ]]; then
+
+        restart_file={params.explicit_restart}
+        if [[ -z "$restart_file" && "{params.auto_restart}" == "true" ]]; then
+          for candidate in {params.rundir}/*.rhdf; do
+            [[ -e "$candidate" ]] || continue
+            if [[ -z "$restart_file" || "$candidate" -nt "$restart_file" ]]; then
+              restart_file="$candidate"
+            fi
+          done
+        fi
+
+        restart_args=()
+        if [[ -n "$restart_file" ]]; then
+          restart_args=(-r "$restart_file")
+          echo "Restarting from $restart_file" >> {log.out}
+        else
           rm -f {params.rundir}/*.phdf
           rm -f {params.rundir}/*.phdf.xdmf
           rm -f {params.rundir}/*.hst
@@ -278,8 +337,8 @@ rule run_turbulence:
         rm -f {output.done}
         cd {params.rundir}
 
-        {resources.mpi} -n {params.mpi_tasks} {input.exe} \
-          {params.restart_arg} -i {input.deck} \
+        {params.launcher} {input.exe} \
+          "${{restart_args[@]}}" -i {input.deck} \
           job/problem_id=turbulence \
           parthenon/job/problem_id={params.problem_id} \
           parthenon/mesh/nx1={params.nx1} \

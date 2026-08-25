@@ -35,6 +35,9 @@ enum { IBF1 = 0, IBF2 = 1, IBF3 = 2 };
 // vars needed for UCT-HLLD calculations
 enum { AL = 0, AR = 1, DL = 2, DR = 3, VBART1 = 4, VBART2 = 5 };
 
+// vars needed for UCT-LLF Teissier calculations
+enum { ELEFT_T1 = 0, ELEFT_T2 = 1, ERIGHT_T1 = 2, ERIGHT_T2 = 3 };
+
 
 // array indices for 1D primitives: velocity, transverse components of field
 enum { IV1 = 1, IV2 = 2, IV3 = 3, IPR = 4 };
@@ -46,6 +49,7 @@ enum class Reconstruction {
   plm,
   ppm,
   wenoz,
+  wenoz_point,
   weno3,
   weno3js,
   weno5js,

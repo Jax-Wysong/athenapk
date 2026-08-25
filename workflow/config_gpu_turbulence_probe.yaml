@@ -1,0 +1,58 @@
+# Short, single-GPU turbulence probe for direct execution on dev-amd20-v100.
+# This overlays workflow/config.yaml and writes to a probe-specific result tree.
+
+plotting_python: /mnt/home/wysongj2/.conda/envs/mhd/bin/python
+gnuplot: /mnt/home/wysongj2/.conda/envs/mhd/bin/gnuplot
+athenapk: build-gpu-v100/bin/athenaPK
+athenapk_mpi: build-gpu-v100/bin/athenaPK
+athenapk_mpi_hdf5: build-gpu-v100/bin/athenaPK
+
+results_root: /mnt/gs21/scratch/wysongj2/athenapk-fourth-order-Teissier24/gpu-runs
+scheme_id: turbulence_gpu_probe
+
+execution:
+  envmodules:
+    - foss/2023a
+    - HDF5/1.14.0-gompi-2023a
+    - CUDA/12.3.0
+  gpus: 1
+  tasks_per_gpu: 1
+  cpus_per_gpu: 1
+  constraint: nvf
+  slurm_extra: "--gpu-bind=closest"
+
+dimension: 3D
+
+tests:
+  mhd_cloud_shock:
+    enabled: false
+
+  turbulence:
+    enabled: true
+    output_group: mhd_comparison
+    resolution: [128, 128, 128]
+    meshblock: [64, 64, 64]
+    tlim: 3.0
+    history_dt: 0.1
+    output_dt: 0.5
+    nodes: 1
+    tasks_per_node: 1
+    mpi_tasks: 1
+    mem_mb_per_cpu: 16000
+    launcher: direct
+    enabled_cases: [uct4_llf_line]
+    cases:
+      uct4_llf_line:
+        label: UCT-LLF Teissier4
+        fluid: ucthlldmhd
+        riemann: llf
+        reconstruction: weno5js
+        integrator: rk4
+        convergence_order: 4
+        first_order_flux_correct: false
+        nghost: 3
+        hydro_options:
+          uct_solver: llf_line
+          scratch_level: 1
+    spectra:
+      enabled: false

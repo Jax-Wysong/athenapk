@@ -10,7 +10,10 @@ add_executable(
         bvals/boundary_conditions_apk.hpp
         eos/adiabatic_hydro.cpp
         hydro/ctmhd/ctmhd.cpp
+        hydro/ctmhd/uctllfmhd.cpp
         hydro/ctmhd/ucthlldmhd.cpp
+        hydro/high_order/conversions.cpp
+        hydro/high_order/teissier_fluxes.cpp
         hydro/diffusion/conduction.cpp
         hydro/diffusion/diffusion.cpp
         hydro/diffusion/diffusion.hpp

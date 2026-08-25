@@ -1,0 +1,187 @@
+# V100 execution overlay for the uniform-grid workflow. This file is merged with
+# workflow/config.yaml by Snakefile, so every normal test remains available. Enable
+# only the one-off simulation(s) desired below.
+
+plotting_python: /mnt/home/wysongj2/.conda/envs/mhd/bin/python
+gnuplot: /mnt/home/wysongj2/.conda/envs/mhd/bin/gnuplot
+athenapk: build-gpu-v100/bin/athenaPK
+athenapk_mpi: build-gpu-v100/bin/athenaPK
+athenapk_mpi_hdf5: build-gpu-v100/bin/athenaPK
+
+results_root: /mnt/gs21/scratch/wysongj2/athenapk-fourth-order-Teissier24/gpu-runs
+scheme_id: turbulence_gpu_production_t100
+
+execution:
+  envmodules:
+    - foss/2023a
+    - HDF5/1.14.0-gompi-2023a
+    - CUDA/12.3.0
+  # For a multi-GPU turbulence run, increase gpus and set turbulence mpi_tasks
+  # to the same value. Keep one MPI task per GPU.
+  gpus: 1
+  tasks_per_gpu: 1
+  cpus_per_gpu: 1
+  constraint: nvf
+  slurm_extra: "--gpu-bind=closest"
+
+dimension: 3D
+fluids: [ucthlldmhd]
+reconstruction: weno5js
+riemann: llf
+integrator: rk4
+convergence_order: 4
+hydro_options:
+  uct_solver: llf_line
+  scratch_level: 1
+
+tests:
+  smooth_vortex:
+    enabled: false
+    resolutions: [16, 32, 64, 128]
+    mpi_tasks: 1
+    mem_mb_per_cpu: 8000
+
+  linear_wave:
+    enabled: false
+    waves: [0, 1, 2, 4, 5, 6]
+    resolutions: [4, 8, 16, 32, 64]
+
+  linear_wave_directions:
+    enabled: false
+    resolutions: [4, 8, 16, 32, 64]
+    visualization_resolution: 64
+
+  cpaw:
+    enabled: false
+    resolutions: [16, 32, 64, 128]
+    mesh:
+      2D:
+        ang_2: 0.0
+        meshblock: [32, 16, 1]
+        mpi_tasks: 1
+        mem_mb_per_cpu: 8000
+      3D:
+        meshblock: [32, 16, 16]
+        mpi_tasks: 1
+        mem_mb_per_cpu: 8000
+
+  cpaw_viz:
+    enabled: false
+
+  field_loop:
+    enabled: false
+
+  field_loop_orientations:
+    enabled: false
+
+  orszag_tang:
+    enabled: false
+    resolution: [256, 256]
+    meshblock: [64, 64]
+    nodes: 1
+    mpi_tasks: 1
+    mem_mb_per_cpu: 8000
+    runtime: 120
+    diagnostic_mem_mb: 4000
+    diagnostic_runtime: 60
+
+  current_sheet:
+    enabled: false
+
+  mhd_cloud_shock:
+    enabled: false
+    resolution: [128, 128, 128]
+    meshblock: [64, 64, 64]
+    mpi_tasks: 1
+    mem_mb_per_cpu: 32000
+    # Use "direct" on dev-amd20-v100. Set this back to "srun" for a
+    # multi-rank production run submitted through Slurm.
+    launcher: direct
+
+  mhd_blast:
+    enabled: false
+    resolution: [256, 256, 256]
+    meshblock: [128, 128, 128]
+    mpi_tasks: 1
+    mem_mb_per_cpu: 8000
+
+  turbulence:
+    enabled: true
+    auto_restart: true
+    resolution: [128, 128, 128]
+    meshblock: [64, 64, 64]
+    tlim: 100.0
+    history_dt: 0.1
+    output_dt: 0.5
+    nodes: 1
+    tasks_per_node: 1
+    mpi_tasks: 1
+    mem_mb_per_cpu: 8000
+    enabled_cases: [glm_weno3js, glm_weno5js, uct2_weno3, uct4_hlld_point, uct4_llf_line]
+    cases:
+      glm_weno3js:
+        label: AthenaPK WENO3
+        fluid: glmmhd
+        riemann: hlld
+        reconstruction: weno3js
+        integrator: rk3
+        convergence_order: 2
+        first_order_flux_correct: false
+        nghost: 2
+        runtime: 360 # 6 hours
+      glm_weno5js:
+        label: AthenaPK WENO5
+        fluid: glmmhd
+        riemann: hlld
+        reconstruction: weno5js
+        integrator: rk3
+        convergence_order: 2
+        first_order_flux_correct: false
+        nghost: 3
+        runtime: 360  # 6 hours
+      uct2_weno3:
+        label: UCT-HLLD 2nd
+        fluid: ucthlldmhd
+        riemann: hlld
+        reconstruction: weno3
+        integrator: rk3
+        convergence_order: 2
+        first_order_flux_correct: false
+        nghost: 2
+        runtime: 360  # 6 hours
+      uct4_hlld_point:
+        label: UCT-HLLD Teissier4 Point
+        fluid: ucthlldmhd
+        riemann: hlld
+        reconstruction: weno5js
+        integrator: rk4
+        convergence_order: 4
+        first_order_flux_correct: false
+        nghost: 3
+        runtime: 359  # restartable 6-hour allocation
+        hydro_options:
+          uct_solver: hlld_point
+          scratch_level: 1
+      uct4_llf_line:
+        label: UCT-LLF Teissier4
+        fluid: ucthlldmhd
+        riemann: llf
+        reconstruction: weno5js
+        integrator: rk4
+        convergence_order: 4
+        first_order_flux_correct: false
+        nghost: 3
+        # Use restartable 12-hour allocations, which are substantially easier for
+        # Slurm to backfill than a single 40-hour V100 allocation.
+        runtime: 359
+        hydro_options:
+          uct_solver: llf_line
+          scratch_level: 1
+    spectra:
+      enabled: false
+      dump_ids: [199, 200]
+      analysis_nodes: 1
+      analysis_tasks: 8
+      mem_mb_per_cpu: 4000
+      runtime: 120
+      kernels: [Gauss]

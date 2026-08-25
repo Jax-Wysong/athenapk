@@ -37,6 +37,8 @@ rule run_cpaw_viz:
             f"{config['results_root']}/{CPAW_VIZ['dimension']}/"
             f"{CPAW_VIZ['fluid']}/{CPAW_VIZ['dirname']}/{{scenario}}/run.err"
         )
+    envmodules:
+        *SIMULATION_ENVMODULES
     params:
         outdir=lambda wc: cpaw_viz_out(wc.scenario),
         rundir=lambda wc: f"{cpaw_viz_out(wc.scenario)}/phdf-files",
@@ -47,7 +49,12 @@ rule run_cpaw_viz:
         v_par=lambda wc: CPAW_VIZ_SCENARIOS[wc.scenario]["v_par"],
         direction=lambda wc: CPAW_VIZ_SCENARIOS[wc.scenario]["dir"],
     resources:
-        runtime=60
+        runtime=60,
+        gpu=SIMULATION_GPU_COUNT,
+        tasks_per_gpu=SIMULATION_TASKS_PER_GPU,
+        cpus_per_gpu=SIMULATION_CPUS_PER_GPU,
+        constraint=SIMULATION_CONSTRAINT,
+        slurm_extra=SIMULATION_SLURM_EXTRA
     wildcard_constraints:
         scenario="|".join(CPAW_VIZ_SCENARIO_NAMES)
     shell:

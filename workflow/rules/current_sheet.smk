@@ -27,6 +27,8 @@ rule run_current_sheet:
     log:
         out=f"{config['results_root']}/{config['dimension']}/{{fluid}}/{CURRENT_SHEET['dirname']}/run.out",
         err=f"{config['results_root']}/{config['dimension']}/{{fluid}}/{CURRENT_SHEET['dirname']}/run.err"
+    envmodules:
+        *SIMULATION_ENVMODULES
     params:
         outdir=lambda wc: current_sheet_out(wc.fluid),
         rundir=lambda wc: f"{current_sheet_out(wc.fluid)}/phdf-files",
@@ -37,7 +39,12 @@ rule run_current_sheet:
         nx2_mb=CURRENT_SHEET_MB[1],
     resources:
         runtime=240,
-        mem_mb=16000
+        mem_mb=16000,
+        gpu=SIMULATION_GPU_COUNT,
+        tasks_per_gpu=SIMULATION_TASKS_PER_GPU,
+        cpus_per_gpu=SIMULATION_CPUS_PER_GPU,
+        constraint=SIMULATION_CONSTRAINT,
+        slurm_extra=SIMULATION_SLURM_EXTRA
         #nodes=1,
         #tasks=16,
         #mpi="srun",

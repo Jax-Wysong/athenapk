@@ -342,7 +342,7 @@ TaskStatus Assemble_Corner_EMF(MeshData<Real> *md) {
 }
 
 
-TaskStatus UpdateWithFaceMagDivergence(MeshData<Real> *mu0, MeshData<Real> *mu1, const Real gam0, const Real gam1, const Real beta_dt) {
+TaskStatus UpdateWithFluxEmfCurl(MeshData<Real> *mu0, MeshData<Real> *mu1, const Real gam0, const Real gam1, const Real beta_dt) {
     auto pmb = mu0->GetBlockData(0)->GetBlockPointer();
     const int ndim = pmb->pmy_mesh->ndim;
 
@@ -465,14 +465,22 @@ void center_Mag_Field(MeshData<Real> *md) {
     const bool correct_ct_energy =
         hydro_pkg->Param<bool>("ct_energy_correction");
     const int ndim = pmb->pmy_mesh->ndim;
+    const auto convergence_order = hydro_pkg->Param<int>("convergence_order");
+
 
     auto cons_pack = md->PackVariables(std::vector<std::string>{"cons"});
     // the edge EMFs will be stored in the fluxes of Bface
     auto Bface_pack = md->PackVariables(std::vector<std::string>{"Bface"});
 
-    IndexRange ib = md->GetBlockData(0)->GetBoundsI(IndexDomain::entire);
-    IndexRange jb = md->GetBlockData(0)->GetBoundsJ(IndexDomain::entire);
-    IndexRange kb = md->GetBlockData(0)->GetBoundsK(IndexDomain::entire);
+    // The fourth-order interpolation reaches two faces away.  Reconstructing the
+    // outermost cell ghost from Bface would therefore require a fourth face ghost.
+    // Fourth-order ghost-cell magnetic averages are instead communicated after the
+    // interior has been centered explicitly in the driver.
+    const auto domain = convergence_order == 4 ? IndexDomain::interior
+                                                : IndexDomain::entire;
+    IndexRange ib = md->GetBlockData(0)->GetBoundsI(domain);
+    IndexRange jb = md->GetBlockData(0)->GetBoundsJ(domain);
+    IndexRange kb = md->GetBlockData(0)->GetBoundsK(domain);
 
     parthenon::par_for(
         DEFAULT_LOOP_PATTERN, "center_Mag_field", parthenon::DevExecSpace(), 0,
@@ -485,17 +493,37 @@ void center_Mag_Field(MeshData<Real> *md) {
             const Real b2_god = cons(IB2, k, j, i);
             const Real b3_god = cons(IB3, k, j, i);
 
-            const Real b1_ct =
-                0.5 * (Bface(TE::F1, 0, k, j, i + 1) +
-                       Bface(TE::F1, 0, k, j, i));
-            const Real b2_ct =
-                0.5 * (Bface(TE::F2, 0, k, j + 1, i) +
-                       Bface(TE::F2, 0, k, j, i));
-            const Real b3_ct =
-                (ndim >= 3)
-                    ? 0.5 * (Bface(TE::F3, 0, k + 1, j, i) +
-                             Bface(TE::F3, 0, k, j, i))
-                    : b3_god;
+            Real b1_ct = b1_god;
+            Real b2_ct = b2_god;
+            Real b3_ct = b3_god;
+            if (convergence_order == 2){
+                b1_ct =
+                    0.5 * (Bface(TE::F1, 0, k, j, i + 1) +
+                        Bface(TE::F1, 0, k, j, i));
+                if (ndim > 1) {
+                    b2_ct = 0.5 * (Bface(TE::F2, 0, k, j + 1, i) +
+                                   Bface(TE::F2, 0, k, j, i));
+                }
+                if (ndim > 2) {
+                    b3_ct = 0.5 * (Bface(TE::F3, 0, k + 1, j, i) +
+                                   Bface(TE::F3, 0, k, j, i));
+                }
+            } else if (convergence_order == 4){ // Teissier et al. Eq. (21)
+                b1_ct =
+                    (1.0/24.0) * (
+                        13.0*(Bface(TE::F1, 0, k, j, i + 1) + Bface(TE::F1, 0, k, j, i)) -
+                             (Bface(TE::F1, 0, k, j, i + 2) + Bface(TE::F1, 0, k, j, i-1)));
+                if (ndim > 1) {
+                    b2_ct = (1.0/24.0) * (
+                        13.0*(Bface(TE::F2, 0, k, j + 1, i) + Bface(TE::F2, 0, k, j, i)) -
+                             (Bface(TE::F2, 0, k, j + 2, i) + Bface(TE::F2, 0, k, j-1, i)));
+                }
+                if (ndim > 2) {
+                    b3_ct = (1.0/24.0) * (
+                        13.0*(Bface(TE::F3, 0, k+1, j, i) + Bface(TE::F3, 0, k, j, i)) -
+                             (Bface(TE::F3, 0, k+2, j, i) + Bface(TE::F3, 0, k-1, j, i)));
+                }
+            }
 
             if (correct_ct_energy) {
               const Real emag_god =
@@ -510,7 +538,11 @@ void center_Mag_Field(MeshData<Real> *md) {
             cons(IB3, k, j, i) = b3_ct;
         });
 
-    // return TaskStatus::complete;
+}
+
+TaskStatus CenterMagFieldTask(MeshData<Real> *md) {
+    center_Mag_Field(md);
+    return TaskStatus::complete;
 }
 
 } // namespace Hydro::CTMHD

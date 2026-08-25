@@ -18,12 +18,12 @@ namespace Hydro::CTMHD {
 
 TaskStatus Assemble_Corner_EMF(MeshData<Real> *md);
 
-TaskStatus UpdateWithFaceMagDivergence(MeshData<Real> *mu0, MeshData<Real> *mu1,
+TaskStatus UpdateWithFluxEmfCurl(MeshData<Real> *mu0, MeshData<Real> *mu1,
                                        const Real gam0, const Real gam1,
                                        const Real beta_dt);
 
-// TaskStatus center_Mag_Field(MeshData<Real> *md);
 void center_Mag_Field(MeshData<Real> *md);
+TaskStatus CenterMagFieldTask(MeshData<Real> *md);
 
 } // namespace Hydro::CTMHD
 

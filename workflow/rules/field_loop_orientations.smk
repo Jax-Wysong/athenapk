@@ -49,6 +49,8 @@ rule run_field_loop_orientation:
             f"{config['results_root']}/2D/{{fluid}}/"
             f"{FIELD_LOOP_ORIENTATIONS['dirname']}/{{orientation}}/run.err"
         )
+    envmodules:
+        *SIMULATION_ENVMODULES
     params:
         outdir=lambda wc: field_loop_orientation_out(wc.fluid, wc.orientation),
         rundir=lambda wc: (
@@ -70,7 +72,12 @@ rule run_field_loop_orientation:
         mb_nx3=FIELD_LOOP_ORIENTATIONS_MESH["mb_nx3"],
         iprob=FIELD_LOOP_ORIENTATIONS_MESH["iprob"]
     resources:
-        runtime=120
+        runtime=120,
+        gpu=SIMULATION_GPU_COUNT,
+        tasks_per_gpu=SIMULATION_TASKS_PER_GPU,
+        cpus_per_gpu=SIMULATION_CPUS_PER_GPU,
+        constraint=SIMULATION_CONSTRAINT,
+        slurm_extra=SIMULATION_SLURM_EXTRA
     shell:
         """
         mkdir -p {params.rundir}

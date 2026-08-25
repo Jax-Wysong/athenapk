@@ -68,6 +68,8 @@ rule run_linear_wave_direction:
             f"{LINEAR_WAVE_DIRECTIONS['dirname']}/{{direction}}/"
             f"wave_{LINEAR_WAVE_DIRECTION_WAVE}/runs/N{{N}}/run.err"
         )
+    envmodules:
+        *SIMULATION_ENVMODULES
     params:
         rundir=lambda wc: (
             f"{linear_wave_direction_out(wc.fluid, wc.direction)}/runs/N{wc.N}"
@@ -82,7 +84,12 @@ rule run_linear_wave_direction:
         nx=lambda wc: int(wc.N)
     resources:
         runtime=120,
-        mem_mb=4000
+        mem_mb=4000,
+        gpu=SIMULATION_GPU_COUNT,
+        tasks_per_gpu=SIMULATION_TASKS_PER_GPU,
+        cpus_per_gpu=SIMULATION_CPUS_PER_GPU,
+        constraint=SIMULATION_CONSTRAINT,
+        slurm_extra=SIMULATION_SLURM_EXTRA
     wildcard_constraints:
         direction="|".join(LINEAR_WAVE_DIRECTION_NAMES)
     shell:
@@ -207,6 +214,8 @@ rule run_linear_wave_direction_viz:
             f"{LINEAR_WAVE_DIRECTIONS['dirname']}/{{direction}}/"
             f"wave_{LINEAR_WAVE_DIRECTION_WAVE}/movie/run.err"
         )
+    envmodules:
+        *SIMULATION_ENVMODULES
     params:
         rundir=lambda wc: (
             f"{linear_wave_direction_out(wc.fluid, wc.direction)}/movie/phdf-files"
@@ -220,7 +229,12 @@ rule run_linear_wave_direction_viz:
         wave_n3=lambda wc: LINEAR_WAVE_DIRECTION_VECTORS[wc.direction][2]
     resources:
         runtime=120,
-        mem_mb=4000
+        mem_mb=4000,
+        gpu=SIMULATION_GPU_COUNT,
+        tasks_per_gpu=SIMULATION_TASKS_PER_GPU,
+        cpus_per_gpu=SIMULATION_CPUS_PER_GPU,
+        constraint=SIMULATION_CONSTRAINT,
+        slurm_extra=SIMULATION_SLURM_EXTRA
     wildcard_constraints:
         direction="|".join(LINEAR_WAVE_DIRECTION_NAMES)
     shell:
