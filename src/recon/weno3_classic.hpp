@@ -25,7 +25,7 @@ using parthenon::ScratchPad2D;
 KOKKOS_INLINE_FUNCTION
 void WENO3JS(const Real &q_im1, const Real &q_i, const Real &q_ip1, Real &ql_ip1, Real &qr_i) {
 
-  const Real epsilon = 1E-26;
+  const Real epsilon = 1E-6;
 
   Real beta[2]; // (2.62) 
   beta[0] = SQR(q_ip1 - q_i);

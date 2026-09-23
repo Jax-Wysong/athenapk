@@ -154,8 +154,8 @@ void UserWorkAfterLoop(Mesh *mesh, ParameterInput *pin, parthenon::SimTime &tm) 
   for (auto &pmb : mesh->block_list) {
     const auto hydro_pkg = pmb->packages.Get("Hydro");
     const auto fluid = hydro_pkg->Param<Fluid>("fluid");
-    const bool fourth_order_init =
-        mhd_pgen_utils::UseFourthOrderFVInitialization(pmb.get());
+    const bool high_order_init =
+        mhd_pgen_utils::UseHighOrderFVInitialization(pmb.get());
 
     IndexRange ib = pmb->cellbounds.GetBoundsI(IndexDomain::interior);
     IndexRange jb = pmb->cellbounds.GetBoundsJ(IndexDomain::interior);
@@ -170,14 +170,14 @@ void UserWorkAfterLoop(Mesh *mesh, ParameterInput *pin, parthenon::SimTime &tm) 
 
     B0_ = VortexAmplitude();
     auto &mbd = pmb->meshblock_data.Get();
-    if (fourth_order_init) {
+    if (high_order_init) {
       auto &u_dev_face = mbd->Get("Bface").data;
       auto Bface_ref = u_dev_face.GetHostMirrorAndCopy();
       const auto evaluate_point_cons =
           [gm1](const Real x1, const Real x2, const Real x3) {
             return EvaluatePointConserved(x1, x2, x3, gm1);
           };
-      mhd_pgen_utils::InitializeFourthOrderSmoothMHD(
+      mhd_pgen_utils::InitializeHighOrderSmoothMHD(
           pmb.get(), cons_, Bface_ref, evaluate_point_cons,
           EvaluateVectorPotential);
     } else {
@@ -223,7 +223,7 @@ void UserWorkAfterLoop(Mesh *mesh, ParameterInput *pin, parthenon::SimTime &tm) 
     for (int k = kb.s; k <= kb.e; ++k) {
       for (int j = jb.s; j <= jb.e; ++j) {
         for (int i = ib.s; i <= ib.e; ++i) {
-          // Load cell-averaged <U>, either midpoint approx. or fourth-order approx
+          // Load cell-averaged <U>, either midpoint or high-order approximation.
           Real d1 = cons_(IDN, k, j, i);
           Real m1 = cons_(IM1, k, j, i);
           Real m2 = cons_(IM2, k, j, i);
@@ -358,8 +358,8 @@ void UserWorkAfterLoop(Mesh *mesh, ParameterInput *pin, parthenon::SimTime &tm) 
   
   const auto hydro_pkg = pmb->packages.Get("Hydro");
   const auto fluid = hydro_pkg->Param<Fluid>("fluid");
-  const bool fourth_order_init =
-      mhd_pgen_utils::UseFourthOrderFVInitialization(pmb);
+  const bool high_order_init =
+      mhd_pgen_utils::UseHighOrderFVInitialization(pmb);
 
   IndexRange ib = pmb->cellbounds.GetBoundsI(IndexDomain::interior);
   IndexRange jb = pmb->cellbounds.GetBoundsJ(IndexDomain::interior);
@@ -385,12 +385,12 @@ void UserWorkAfterLoop(Mesh *mesh, ParameterInput *pin, parthenon::SimTime &tm) 
     auto &u_dev_face = mbd->Get("Bface").data;
     auto Bface = u_dev_face.GetHostMirrorAndCopy();
 
-    if (fourth_order_init) {
+    if (high_order_init) {
       const auto evaluate_point_cons =
           [gm1](const Real x1, const Real x2, const Real x3) {
             return EvaluatePointConserved(x1, x2, x3, gm1);
           };
-      mhd_pgen_utils::InitializeFourthOrderSmoothMHD(
+      mhd_pgen_utils::InitializeHighOrderSmoothMHD(
           pmb, u, Bface, evaluate_point_cons, EvaluateVectorPotential);
     } else {
       Bface_Fill_Cons(pmb, u, Bface);
@@ -398,7 +398,7 @@ void UserWorkAfterLoop(Mesh *mesh, ParameterInput *pin, parthenon::SimTime &tm) 
     u_dev_face.DeepCopy(Bface);
   }
 
-  if (!fourth_order_init) {
+  if (!high_order_init) {
     for (int k = kb.s; k <= kb.e; k++) {
       for (int j = jb.s; j <= jb.e; j++) {
         for (int i = ib.s; i <= ib.e; i++) {

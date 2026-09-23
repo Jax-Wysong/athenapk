@@ -20,6 +20,8 @@ TaskStatus PointToAreaAverage(MeshData<Real> *md);
 TaskStatus PointEmfToLineAverage(MeshData<Real> *md);
 TaskStatus ReconcileSelfPeriodicFluxesAndEmfs(MeshData<Real> *md);
 TaskStatus PointElectricFieldsToAreaAverage(MeshData<Real> *md);
+TaskStatus PointHLLDProductsToAreaAverage(MeshData<Real> *md);
+
 
 } // namespace Hydro::HIGHORDER
 

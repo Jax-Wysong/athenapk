@@ -53,6 +53,8 @@ enum class Reconstruction {
   weno3,
   weno3js,
   weno5js,
+  weno7js,
+  weno9js,
   limo3
 };
 enum class Integrator { undefined, rk1, rk2, vl2, rk3, rk4 };

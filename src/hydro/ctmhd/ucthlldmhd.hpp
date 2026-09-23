@@ -18,7 +18,9 @@ namespace Hydro::UCTHLLDMHD {
 
 TaskStatus Assemble_HLLD_Edge_EMF(MeshData<Real> *md);
 TaskStatus Assemble_HLLD_WENO3_Edge_EMF(MeshData<Real> *md);
+TaskStatus Assemble_HLLD_WENO3JS_Edge_EMF(MeshData<Real> *md);
 TaskStatus Assemble_HLLD_Point_Edge_EMF(MeshData<Real> *md);
+TaskStatus Assemble_HLLD_Line_Edge_EMF(MeshData<Real> *md);
 
 
 

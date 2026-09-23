@@ -12,30 +12,17 @@
 
 using parthenon::Real;
 
-#include "../../recon/weno5_classic.hpp"
+#include "uct_edge_reconstruction.hpp"
 #include "uctllfmhd.hpp"
 
 using namespace parthenon::package::prelude;
 using TE = parthenon::TopologicalElement;
 
 namespace Hydro::UCTLLFMHD {
-namespace {
+using UCTEdgeReconstruction::ReconstructFaceToEdge;
 
-// Reconstruct the two states at the interface between the lower-index and
-// upper-index cells. Each WENO5-JS state has its own five-point stencil.
-KOKKOS_INLINE_FUNCTION
-void ReconstructWENO5Interface(const Real q_m3, const Real q_m2,
-                               const Real q_m1, const Real q_0,
-                               const Real q_p1, const Real q_p2,
-                               Real &q_from_lower, Real &q_from_upper) {
-  Real unused;
-  WENO5JS(q_m3, q_m2, q_m1, q_0, q_p1, q_from_lower, unused);
-  WENO5JS(q_m2, q_m1, q_0, q_p1, q_p2, unused, q_from_upper);
-}
-
-} // namespace
-
-TaskStatus Assemble_LLF_Line_Edge_EMF(MeshData<Real> *md) {
+template <int ORDER>
+TaskStatus AssembleLLFLineEdgeEMFImpl(MeshData<Real> *md) {
   auto pmb = md->GetBlockData(0)->GetBlockPointer();
   const int ndim = pmb->pmy_mesh->ndim;
 
@@ -67,42 +54,18 @@ TaskStatus Assemble_LLF_Line_Edge_EMF(MeshData<Real> *md) {
           // F1 is reconstructed along x2. Its LEFT/RIGHT states belong to
           // the west/east cells adjacent to the x1 face.
           Real f1_left_s, f1_left_n, f1_right_s, f1_right_n;
-          ReconstructWENO5Interface(
-              eface(TE::F1, ELEFT_T2, k, j - 3, i),
-              eface(TE::F1, ELEFT_T2, k, j - 2, i),
-              eface(TE::F1, ELEFT_T2, k, j - 1, i),
-              eface(TE::F1, ELEFT_T2, k, j, i),
-              eface(TE::F1, ELEFT_T2, k, j + 1, i),
-              eface(TE::F1, ELEFT_T2, k, j + 2, i), f1_left_s,
-              f1_left_n);
-          ReconstructWENO5Interface(
-              eface(TE::F1, ERIGHT_T2, k, j - 3, i),
-              eface(TE::F1, ERIGHT_T2, k, j - 2, i),
-              eface(TE::F1, ERIGHT_T2, k, j - 1, i),
-              eface(TE::F1, ERIGHT_T2, k, j, i),
-              eface(TE::F1, ERIGHT_T2, k, j + 1, i),
-              eface(TE::F1, ERIGHT_T2, k, j + 2, i), f1_right_s,
-              f1_right_n);
+          ReconstructFaceToEdge<ORDER, X2DIR>(
+              eface, TE::F1, ELEFT_T2, k, j, i, f1_left_s, f1_left_n);
+          ReconstructFaceToEdge<ORDER, X2DIR>(
+              eface, TE::F1, ERIGHT_T2, k, j, i, f1_right_s, f1_right_n);
 
           // F2 is reconstructed along x1. Its LEFT/RIGHT states belong to
           // the south/north cells adjacent to the x2 face.
           Real f2_left_w, f2_left_e, f2_right_w, f2_right_e;
-          ReconstructWENO5Interface(
-              eface(TE::F2, ELEFT_T1, k, j, i - 3),
-              eface(TE::F2, ELEFT_T1, k, j, i - 2),
-              eface(TE::F2, ELEFT_T1, k, j, i - 1),
-              eface(TE::F2, ELEFT_T1, k, j, i),
-              eface(TE::F2, ELEFT_T1, k, j, i + 1),
-              eface(TE::F2, ELEFT_T1, k, j, i + 2), f2_left_w,
-              f2_left_e);
-          ReconstructWENO5Interface(
-              eface(TE::F2, ERIGHT_T1, k, j, i - 3),
-              eface(TE::F2, ERIGHT_T1, k, j, i - 2),
-              eface(TE::F2, ERIGHT_T1, k, j, i - 1),
-              eface(TE::F2, ERIGHT_T1, k, j, i),
-              eface(TE::F2, ERIGHT_T1, k, j, i + 1),
-              eface(TE::F2, ERIGHT_T1, k, j, i + 2), f2_right_w,
-              f2_right_e);
+          ReconstructFaceToEdge<ORDER, X1DIR>(
+              eface, TE::F2, ELEFT_T1, k, j, i, f2_left_w, f2_left_e);
+          ReconstructFaceToEdge<ORDER, X1DIR>(
+              eface, TE::F2, ERIGHT_T1, k, j, i, f2_right_w, f2_right_e);
 
           const Real EzSW = 0.5 * (f1_left_s + f2_left_w);
           const Real EzSE = 0.5 * (f1_right_s + f2_left_e);
@@ -110,22 +73,12 @@ TaskStatus Assemble_LLF_Line_Edge_EMF(MeshData<Real> *md) {
           const Real EzNE = 0.5 * (f1_right_n + f2_right_e);
 
           Real ByW, ByE;
-          ReconstructWENO5Interface(
-              Bface(TE::F2, 0, k, j, i - 3),
-              Bface(TE::F2, 0, k, j, i - 2),
-              Bface(TE::F2, 0, k, j, i - 1),
-              Bface(TE::F2, 0, k, j, i),
-              Bface(TE::F2, 0, k, j, i + 1),
-              Bface(TE::F2, 0, k, j, i + 2), ByW, ByE);
+          ReconstructFaceToEdge<ORDER, X1DIR>(
+              Bface, TE::F2, 0, k, j, i, ByW, ByE);
 
           Real BxS, BxN;
-          ReconstructWENO5Interface(
-              Bface(TE::F1, 0, k, j - 3, i),
-              Bface(TE::F1, 0, k, j - 2, i),
-              Bface(TE::F1, 0, k, j - 1, i),
-              Bface(TE::F1, 0, k, j, i),
-              Bface(TE::F1, 0, k, j + 1, i),
-              Bface(TE::F1, 0, k, j + 2, i), BxS, BxN);
+          ReconstructFaceToEdge<ORDER, X2DIR>(
+              Bface, TE::F1, 0, k, j, i, BxS, BxN);
 
           const Real axS = speed(TE::F1, 0, k, j - 1, i);
           const Real axN = speed(TE::F1, 0, k, j, i);
@@ -156,40 +109,18 @@ TaskStatus Assemble_LLF_Line_Edge_EMF(MeshData<Real> *md) {
           // F3 is reconstructed along x1; F1 is reconstructed along x3.
           Real f3_left_xlow, f3_left_xhigh, f3_right_xlow,
               f3_right_xhigh;
-          ReconstructWENO5Interface(
-              eface(TE::F3, ELEFT_T2, k, j, i - 3),
-              eface(TE::F3, ELEFT_T2, k, j, i - 2),
-              eface(TE::F3, ELEFT_T2, k, j, i - 1),
-              eface(TE::F3, ELEFT_T2, k, j, i),
-              eface(TE::F3, ELEFT_T2, k, j, i + 1),
-              eface(TE::F3, ELEFT_T2, k, j, i + 2), f3_left_xlow,
-              f3_left_xhigh);
-          ReconstructWENO5Interface(
-              eface(TE::F3, ERIGHT_T2, k, j, i - 3),
-              eface(TE::F3, ERIGHT_T2, k, j, i - 2),
-              eface(TE::F3, ERIGHT_T2, k, j, i - 1),
-              eface(TE::F3, ERIGHT_T2, k, j, i),
-              eface(TE::F3, ERIGHT_T2, k, j, i + 1),
-              eface(TE::F3, ERIGHT_T2, k, j, i + 2), f3_right_xlow,
+          ReconstructFaceToEdge<ORDER, X1DIR>(
+              eface, TE::F3, ELEFT_T2, k, j, i, f3_left_xlow, f3_left_xhigh);
+          ReconstructFaceToEdge<ORDER, X1DIR>(
+              eface, TE::F3, ERIGHT_T2, k, j, i, f3_right_xlow,
               f3_right_xhigh);
 
           Real f1_left_zlow, f1_left_zhigh, f1_right_zlow,
               f1_right_zhigh;
-          ReconstructWENO5Interface(
-              eface(TE::F1, ELEFT_T1, k - 3, j, i),
-              eface(TE::F1, ELEFT_T1, k - 2, j, i),
-              eface(TE::F1, ELEFT_T1, k - 1, j, i),
-              eface(TE::F1, ELEFT_T1, k, j, i),
-              eface(TE::F1, ELEFT_T1, k + 1, j, i),
-              eface(TE::F1, ELEFT_T1, k + 2, j, i), f1_left_zlow,
-              f1_left_zhigh);
-          ReconstructWENO5Interface(
-              eface(TE::F1, ERIGHT_T1, k - 3, j, i),
-              eface(TE::F1, ERIGHT_T1, k - 2, j, i),
-              eface(TE::F1, ERIGHT_T1, k - 1, j, i),
-              eface(TE::F1, ERIGHT_T1, k, j, i),
-              eface(TE::F1, ERIGHT_T1, k + 1, j, i),
-              eface(TE::F1, ERIGHT_T1, k + 2, j, i), f1_right_zlow,
+          ReconstructFaceToEdge<ORDER, X3DIR>(
+              eface, TE::F1, ELEFT_T1, k, j, i, f1_left_zlow, f1_left_zhigh);
+          ReconstructFaceToEdge<ORDER, X3DIR>(
+              eface, TE::F1, ERIGHT_T1, k, j, i, f1_right_zlow,
               f1_right_zhigh);
 
           const Real EyZlowXlow =
@@ -202,22 +133,12 @@ TaskStatus Assemble_LLF_Line_Edge_EMF(MeshData<Real> *md) {
               0.5 * (f3_right_xhigh + f1_right_zhigh);
 
           Real BxZlow, BxZhigh;
-          ReconstructWENO5Interface(
-              Bface(TE::F1, 0, k - 3, j, i),
-              Bface(TE::F1, 0, k - 2, j, i),
-              Bface(TE::F1, 0, k - 1, j, i),
-              Bface(TE::F1, 0, k, j, i),
-              Bface(TE::F1, 0, k + 1, j, i),
-              Bface(TE::F1, 0, k + 2, j, i), BxZlow, BxZhigh);
+          ReconstructFaceToEdge<ORDER, X3DIR>(
+              Bface, TE::F1, 0, k, j, i, BxZlow, BxZhigh);
 
           Real BzXlow, BzXhigh;
-          ReconstructWENO5Interface(
-              Bface(TE::F3, 0, k, j, i - 3),
-              Bface(TE::F3, 0, k, j, i - 2),
-              Bface(TE::F3, 0, k, j, i - 1),
-              Bface(TE::F3, 0, k, j, i),
-              Bface(TE::F3, 0, k, j, i + 1),
-              Bface(TE::F3, 0, k, j, i + 2), BzXlow, BzXhigh);
+          ReconstructFaceToEdge<ORDER, X1DIR>(
+              Bface, TE::F3, 0, k, j, i, BzXlow, BzXhigh);
 
           const Real azXlow = speed(TE::F3, 0, k, j, i - 1);
           const Real azXhigh = speed(TE::F3, 0, k, j, i);
@@ -249,40 +170,18 @@ TaskStatus Assemble_LLF_Line_Edge_EMF(MeshData<Real> *md) {
           // F2 is reconstructed along x3; F3 is reconstructed along x2.
           Real f2_left_zlow, f2_left_zhigh, f2_right_zlow,
               f2_right_zhigh;
-          ReconstructWENO5Interface(
-              eface(TE::F2, ELEFT_T2, k - 3, j, i),
-              eface(TE::F2, ELEFT_T2, k - 2, j, i),
-              eface(TE::F2, ELEFT_T2, k - 1, j, i),
-              eface(TE::F2, ELEFT_T2, k, j, i),
-              eface(TE::F2, ELEFT_T2, k + 1, j, i),
-              eface(TE::F2, ELEFT_T2, k + 2, j, i), f2_left_zlow,
-              f2_left_zhigh);
-          ReconstructWENO5Interface(
-              eface(TE::F2, ERIGHT_T2, k - 3, j, i),
-              eface(TE::F2, ERIGHT_T2, k - 2, j, i),
-              eface(TE::F2, ERIGHT_T2, k - 1, j, i),
-              eface(TE::F2, ERIGHT_T2, k, j, i),
-              eface(TE::F2, ERIGHT_T2, k + 1, j, i),
-              eface(TE::F2, ERIGHT_T2, k + 2, j, i), f2_right_zlow,
+          ReconstructFaceToEdge<ORDER, X3DIR>(
+              eface, TE::F2, ELEFT_T2, k, j, i, f2_left_zlow, f2_left_zhigh);
+          ReconstructFaceToEdge<ORDER, X3DIR>(
+              eface, TE::F2, ERIGHT_T2, k, j, i, f2_right_zlow,
               f2_right_zhigh);
 
           Real f3_left_ylow, f3_left_yhigh, f3_right_ylow,
               f3_right_yhigh;
-          ReconstructWENO5Interface(
-              eface(TE::F3, ELEFT_T1, k, j - 3, i),
-              eface(TE::F3, ELEFT_T1, k, j - 2, i),
-              eface(TE::F3, ELEFT_T1, k, j - 1, i),
-              eface(TE::F3, ELEFT_T1, k, j, i),
-              eface(TE::F3, ELEFT_T1, k, j + 1, i),
-              eface(TE::F3, ELEFT_T1, k, j + 2, i), f3_left_ylow,
-              f3_left_yhigh);
-          ReconstructWENO5Interface(
-              eface(TE::F3, ERIGHT_T1, k, j - 3, i),
-              eface(TE::F3, ERIGHT_T1, k, j - 2, i),
-              eface(TE::F3, ERIGHT_T1, k, j - 1, i),
-              eface(TE::F3, ERIGHT_T1, k, j, i),
-              eface(TE::F3, ERIGHT_T1, k, j + 1, i),
-              eface(TE::F3, ERIGHT_T1, k, j + 2, i), f3_right_ylow,
+          ReconstructFaceToEdge<ORDER, X2DIR>(
+              eface, TE::F3, ELEFT_T1, k, j, i, f3_left_ylow, f3_left_yhigh);
+          ReconstructFaceToEdge<ORDER, X2DIR>(
+              eface, TE::F3, ERIGHT_T1, k, j, i, f3_right_ylow,
               f3_right_yhigh);
 
           const Real ExYlowZlow =
@@ -295,22 +194,12 @@ TaskStatus Assemble_LLF_Line_Edge_EMF(MeshData<Real> *md) {
               0.5 * (f2_right_zhigh + f3_right_yhigh);
 
           Real BzYlow, BzYhigh;
-          ReconstructWENO5Interface(
-              Bface(TE::F3, 0, k, j - 3, i),
-              Bface(TE::F3, 0, k, j - 2, i),
-              Bface(TE::F3, 0, k, j - 1, i),
-              Bface(TE::F3, 0, k, j, i),
-              Bface(TE::F3, 0, k, j + 1, i),
-              Bface(TE::F3, 0, k, j + 2, i), BzYlow, BzYhigh);
+          ReconstructFaceToEdge<ORDER, X2DIR>(
+              Bface, TE::F3, 0, k, j, i, BzYlow, BzYhigh);
 
           Real ByZlow, ByZhigh;
-          ReconstructWENO5Interface(
-              Bface(TE::F2, 0, k - 3, j, i),
-              Bface(TE::F2, 0, k - 2, j, i),
-              Bface(TE::F2, 0, k - 1, j, i),
-              Bface(TE::F2, 0, k, j, i),
-              Bface(TE::F2, 0, k + 1, j, i),
-              Bface(TE::F2, 0, k + 2, j, i), ByZlow, ByZhigh);
+          ReconstructFaceToEdge<ORDER, X3DIR>(
+              Bface, TE::F2, 0, k, j, i, ByZlow, ByZhigh);
 
           const Real ayZlow = speed(TE::F2, 0, k - 1, j, i);
           const Real ayZhigh = speed(TE::F2, 0, k, j, i);
@@ -330,6 +219,15 @@ TaskStatus Assemble_LLF_Line_Edge_EMF(MeshData<Real> *md) {
   }
 
   return TaskStatus::complete;
+}
+
+TaskStatus Assemble_LLF_Line_Edge_EMF(MeshData<Real> *md) {
+  const auto pkg = md->GetBlockData(0)->GetBlockPointer()->packages.Get("Hydro");
+  const int order = pkg->Param<int>("convergence_order");
+  if (order == 4) return AssembleLLFLineEdgeEMFImpl<4>(md);
+  if (order == 6) return AssembleLLFLineEdgeEMFImpl<6>(md);
+  if (order == 8) return AssembleLLFLineEdgeEMFImpl<8>(md);
+  PARTHENON_FAIL("Unsupported Teissier LLF-line edge-EMF order");
 }
 
 } // namespace Hydro::UCTLLFMHD

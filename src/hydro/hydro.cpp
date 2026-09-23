@@ -26,6 +26,8 @@
 #include "../recon/weno3_classic.hpp"
 #include "../recon/weno3_simple.hpp"
 #include "../recon/weno5_classic.hpp"
+#include "../recon/weno7_classic.hpp"
+#include "../recon/weno9_classic.hpp"
 #include "../recon/wenoz_simple.hpp"
 #include "../refinement/refinement.hpp"
 #include "../tracers/tracers.hpp"
@@ -409,24 +411,32 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
   const int convergence_order =
       pin->GetOrAddInteger("hydro", "convergence_order", 2);
   pkg->AddParam<>("convergence_order", convergence_order);
-  if (convergence_order != 2 && convergence_order != 4){
-    PARTHENON_FAIL("Convergence_order must be either 2 or 4");
+  if (convergence_order != 2 && convergence_order != 4 && convergence_order != 6 && convergence_order != 8){
+    PARTHENON_FAIL("Convergence_order must be either 2, 4, 6, or 8");
   }
-  if (convergence_order == 4 && fluid != Fluid::ucthlldmhd){
-    PARTHENON_FAIL("4th order convergence route currently only supports fluid::ucthlldmhd");
+  if ((convergence_order > 2) && fluid != Fluid::ucthlldmhd){
+    PARTHENON_FAIL("Higher than 2nd order convergence route currently only supports fluid::ucthlldmhd");
   }
   auto uct_solver =
       pin->GetOrAddString("hydro", "uct_solver", "none");
   pkg->AddParam<>("uct_solver", uct_solver);
-  if (uct_solver == "hlld_line") {
-    PARTHENON_FAIL(
-        "The hlld_line UCT route is not implemented yet.");
-  }
   if (convergence_order == 4){
     PARTHENON_REQUIRE(
-        uct_solver == "hlld_point" || uct_solver == "llf_line",
+        uct_solver == "hlld_point" || uct_solver == "hlld_line" || uct_solver == "llf_line",
         "The current fourth-order Teissier route requires "
-        "hydro/uct_solver=hlld_point or hydro/uct_solver=llf_line.");
+        "hydro/uct_solver=hlld_point or hydro/uct_solver=hlld_line or hydro/uct_solver=llf_line.");
+  }
+  if (convergence_order == 6){
+    PARTHENON_REQUIRE(
+        uct_solver == "hlld_line" || uct_solver == "llf_line",
+        "The current sixth-order Teissier route requires "
+        "hydro/uct_solver=hlld_line or hydro/uct_solver=llf_line.");
+  }
+  if (convergence_order == 8){
+    PARTHENON_REQUIRE(
+        uct_solver == "hlld_line" || uct_solver == "llf_line",
+        "The current eighth-order Teissier route requires "
+        "hydro/uct_solver=hlld_line or hydro/uct_solver=llf_line.");
   }
 
 
@@ -446,7 +456,7 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
 
 
   const auto recon_str = pin->GetString("hydro", "reconstruction");
-  int recon_need_nghost = 3; // largest number for the choices below
+  int recon_need_nghost = 3;
   auto recon = Reconstruction::undefined;
   if (recon_str == "dc") {
     recon = Reconstruction::dc;
@@ -469,6 +479,12 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
   } else if (recon_str == "weno5js") {
     recon = Reconstruction::weno5js;
     recon_need_nghost = 3;
+  } else if (recon_str == "weno7js") {
+    recon = Reconstruction::weno7js;
+    recon_need_nghost = 4;
+  } else if (recon_str == "weno9js") {
+    recon = Reconstruction::weno9js;
+    recon_need_nghost = 5;
   } else if (recon_str == "wenoz") {
     recon = Reconstruction::wenoz;
     recon_need_nghost = 3;
@@ -484,13 +500,23 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
   auto riemann = RiemannSolver::undefined;
   if (riemann_str == "llf") {
     riemann = RiemannSolver::llf;
-    const bool teissier_llf_line =
+    const bool teissier_llf_line4 =
         fluid == Fluid::ucthlldmhd && convergence_order == 4 &&
         uct_solver == "llf_line" && recon == Reconstruction::weno5js;
+    const bool teissier_llf_line6 =
+        fluid == Fluid::ucthlldmhd && convergence_order == 6 &&
+        uct_solver == "llf_line" && recon == Reconstruction::weno7js;
+    const bool teissier_llf_line8 =
+        fluid == Fluid::ucthlldmhd && convergence_order == 8 &&
+        uct_solver == "llf_line" && recon == Reconstruction::weno9js;
     PARTHENON_REQUIRE(
-        recon == Reconstruction::dc || teissier_llf_line,
-        "LLF Riemann solver only supports DC reconstruction, except for the "
-        "fourth-order Teissier llf_line route with WENO5JS reconstruction.")
+      recon == Reconstruction::dc ||
+          teissier_llf_line4 ||
+          teissier_llf_line6 ||
+          teissier_llf_line8,
+      "LLF Riemann solver only supports DC reconstruction, except for "
+      "the fourth-order WENO5JS, sixth-order WENO7JS, and eighth-order WENO9JS Teissier "
+      "llf_line routes.");
   } else if (riemann_str == "hlle") {
     riemann = RiemannSolver::hlle;
   } else if (riemann_str == "hllc") {
@@ -518,21 +544,46 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
   }
   if (fluid == Fluid::ucthlldmhd) {
     if (convergence_order == 2 &&
-        ((recon != Reconstruction::plm && recon != Reconstruction::weno3) ||
+        ((recon != Reconstruction::plm && recon != Reconstruction::weno3 &&
+          recon != Reconstruction::weno3js) ||
          riemann != RiemannSolver::hlld)) {
       PARTHENON_FAIL(
-          "AthenaPK hydro: second-order ucthlldmhd supports PLM or WENO3 "
+          "AthenaPK hydro: second-order ucthlldmhd supports PLM, WENO3, or WENO3JS "
           "reconstruction and requires HLLD Riemann solves.");
     }
     if (convergence_order == 4) {
       const bool valid_riemann_uct_pair =
           (uct_solver == "hlld_point" && riemann == RiemannSolver::hlld) ||
+          (uct_solver == "hlld_line" && riemann == RiemannSolver::hlld) ||
           (uct_solver == "llf_line" && riemann == RiemannSolver::llf);
       PARTHENON_REQUIRE(
           recon == Reconstruction::weno5js && valid_riemann_uct_pair,
           "AthenaPK hydro: the fourth-order Teissier route requires WENO5JS "
           "reconstruction and one of the matched solver pairs "
           "riemann=hlld/uct_solver=hlld_point or "
+          "riemann=hlld/uct_solver=hlld_line or "
+          "riemann=llf/uct_solver=llf_line.");
+    }
+    if (convergence_order == 6) {
+      const bool valid_riemann_uct_pair =
+          (uct_solver == "hlld_line" && riemann == RiemannSolver::hlld) ||
+          (uct_solver == "llf_line" && riemann == RiemannSolver::llf);
+      PARTHENON_REQUIRE(
+          recon == Reconstruction::weno7js && valid_riemann_uct_pair,
+          "AthenaPK hydro: the sixth-order Teissier route requires WENO7 "
+          "reconstruction and one of the matched solver pairs "
+          "riemann=hlld/uct_solver=hlld_line or "
+          "riemann=llf/uct_solver=llf_line.");
+    }
+    if (convergence_order == 8) {
+      const bool valid_riemann_uct_pair =
+          (uct_solver == "hlld_line" && riemann == RiemannSolver::hlld) ||
+          (uct_solver == "llf_line" && riemann == RiemannSolver::llf);
+      PARTHENON_REQUIRE(
+          recon == Reconstruction::weno9js && valid_riemann_uct_pair,
+          "AthenaPK hydro: the eighth-order Teissier route requires WENO9 "
+          "reconstruction and one of the matched solver pairs "
+          "riemann=hlld/uct_solver=hlld_line or "
           "riemann=llf/uct_solver=llf_line.");
     }
   }
@@ -586,10 +637,13 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
   // Second-order UCT-HLLD options.
   add_flux_fun<Fluid::ucthlldmhd, Reconstruction::plm, RiemannSolver::hlld>(flux_functions);
   add_flux_fun<Fluid::ucthlldmhd, Reconstruction::weno3, RiemannSolver::hlld>(flux_functions);
+  add_flux_fun<Fluid::ucthlldmhd, Reconstruction::weno3js, RiemannSolver::hlld>(flux_functions);
   // The Teissier driver bypasses this function pointer with its split
   // reconstruction/AtoP/Riemann tasks, but registering the selected input tuple keeps
   // package initialization and the common flux-function lookup well-defined.
   add_flux_fun<Fluid::ucthlldmhd, Reconstruction::weno5js, RiemannSolver::hlld>(flux_functions);
+  add_flux_fun<Fluid::ucthlldmhd, Reconstruction::weno7js, RiemannSolver::hlld>(flux_functions);
+  add_flux_fun<Fluid::ucthlldmhd, Reconstruction::weno9js, RiemannSolver::hlld>(flux_functions);
 
   // Add first order recon with LLF fluxes (implemented for testing as tight loop)
   flux_functions[std::make_tuple(Fluid::euler, Reconstruction::dc, RiemannSolver::llf)] =
@@ -601,7 +655,11 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
   FluxFun_t *flux_other_stage = nullptr;
   const bool teissier4 =
       fluid == Fluid::ucthlldmhd && convergence_order == 4;
-  if (!teissier4) {
+  const bool teissier6 =
+      fluid == Fluid::ucthlldmhd && convergence_order == 6;
+  const bool teissier8 =
+      fluid == Fluid::ucthlldmhd && convergence_order == 8;
+  if (!teissier4 && !teissier6 && !teissier8) {
     flux_other_stage =
         flux_functions.at(std::make_tuple(fluid, recon, riemann));
   }
@@ -643,6 +701,16 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
         nghost >= 3,
         "The fourth-order Teissier route requires at least three ghost zones.");
   }
+  if (convergence_order == 6) {
+    PARTHENON_REQUIRE(
+        nghost >= 4,
+        "The sixth-order Teissier route requires at least four ghost zones.");
+  }
+  if (convergence_order == 8) {
+    PARTHENON_REQUIRE(
+        nghost >= 6,
+        "The eighth-order Teissier route requires at least six ghost zones.");
+  }
 
   const auto integrator_str = pin->GetString("parthenon/time", "integrator");
   auto integrator = Integrator::undefined;
@@ -659,7 +727,7 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
   } else if (integrator_str == "vl2") {
     integrator = Integrator::vl2;
     // override first stage (predictor) to first order
-    if (!teissier4) {
+    if (!teissier4 && !teissier6 && !teissier8) {
       flux_first_stage =
           flux_functions.at(std::make_tuple(fluid, Reconstruction::dc, riemann));
     }
@@ -677,15 +745,15 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
       "AthenaPK hydro: first_order_flux_correct is not currently supported with "
       "ctmhd, ucthlldmhd, or RK4 time stepping.");
   pkg->AddParam<>("first_order_flux_correct", first_order_flux_correct);
-  if (convergence_order == 4) {
+  if (convergence_order > 2) {
     const auto mesh_refinement =
         pin->GetOrAddString("parthenon/mesh", "refinement", "none");
     PARTHENON_REQUIRE(
         mesh_refinement == "none",
-        "The fourth-order Teissier route currently supports uniform meshes only.");
+        "Higher than 2nd order Teissier routes currently supports uniform meshes only.");
     PARTHENON_REQUIRE(
         !first_order_flux_correct,
-        "The fourth-order Teissier route does not support first-order flux correction.");
+        "Higher than 2nd order Teissier route does not support first-order flux correction.");
   }
   if (first_order_flux_correct) {
     if (fluid == Fluid::euler) {
@@ -1016,8 +1084,33 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
     uct_aux_labels[VBART2] = "second_transverse_vel";
   }
 
-  std::vector<std::string> teissier_eface_labels(4);
+  std::vector<std::string> teissier_hlld_vbart_labels(2);
   if (fluid == Fluid::ucthlldmhd && convergence_order == 4 &&
+      uct_solver == "hlld_point") {
+    teissier_hlld_vbart_labels[0] = "first_transverse_vel";
+    teissier_hlld_vbart_labels[1] = "second_transverse_vel";
+  }
+
+  std::vector<std::string> teissier_hlld_vbartB_point_labels(2);
+  if (fluid == Fluid::ucthlldmhd && convergence_order > 2 &&
+      uct_solver == "hlld_line") {
+      teissier_hlld_vbartB_point_labels[0] =
+          "first_transverse_vel_times_Bn_point";
+      teissier_hlld_vbartB_point_labels[1] =
+          "second_transverse_vel_times_Bn_point";
+  }
+
+  std::vector<std::string> teissier_hlld_vbartB_avg_labels(2);
+  if (fluid == Fluid::ucthlldmhd && convergence_order > 2 &&
+      uct_solver == "hlld_line") {
+      teissier_hlld_vbartB_avg_labels[0] =
+          "first_transverse_vel_times_Bn_avg";
+      teissier_hlld_vbartB_avg_labels[1] =
+          "second_transverse_vel_times_Bn_avg";
+  }
+
+  std::vector<std::string> teissier_eface_labels(4);
+  if (fluid == Fluid::ucthlldmhd && convergence_order > 2 &&
       uct_solver == "llf_line") {
     teissier_eface_labels[ELEFT_T1]  = "left-side first transverse EMF";
     teissier_eface_labels[ELEFT_T2]  = "left-side second transverse EMF";
@@ -1073,7 +1166,8 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
       // uct_hlld(TE::F1, DR, ...)      uct_hlld(TE::F2, DR, ...)       uct_hlld(TE::F3, DR, ...)
       // uct_hlld(TE::F1, VBART1, ...)  uct_hlld(TE::F2, VBART1, ...)   uct_hlld(TE::F3, VBART1, ...)
       // uct_hlld(TE::F1, VBART2, ...)  uct_hlld(TE::F2, VBART2, ...)   uct_hlld(TE::F3, VBART2, ...)
-      // and derived and saved during the hlld Riemann solve
+      // Native second-order HLLD fills all six entries. Teissier HLLD uses
+      // AL/AR/DL/DR here and stores its communicated VBART values separately.
     pkg->AddField("uct_hlld", uct_m);
   }
 
@@ -1091,8 +1185,7 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
     // kept separate from cons.flux so that the transverse point-to-area
     // stencil has an immutable input while writing the final area averages.
     Metadata point_flux_m(
-        {Metadata::Face, Metadata::Derived, Metadata::OneCopy,
-         Metadata::FillGhost},
+        {Metadata::Face, Metadata::Derived, Metadata::OneCopy},
         std::vector<int>({nhydro + nscalars}), cons_labels);
     pkg->AddField("consflux_point", point_flux_m);
 
@@ -1106,14 +1199,34 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
                         Metadata::WithFluxes, Metadata::FillGhost}
       );
       pkg->AddField("Bface_point", bfpoint_m);
+
+      // Only the two transverse HLLD velocities need a full three-layer
+      // point-face halo for the five-point edge reconstruction. Point fluxes
+      // and AL/AR/DL/DR are generated through their shorter one-layer halo
+      // locally.
+      Metadata vbart_m(
+          {Metadata::Face, Metadata::Derived, Metadata::OneCopy,
+           Metadata::FillGhost},
+          std::vector<int>{2}, teissier_hlld_vbart_labels);
+      pkg->AddField("teissier_hlld_vbart", vbart_m);
+    } else if (uct_solver == "hlld_line"){
+      Metadata vbartB_point_m(
+          {Metadata::Face, Metadata::Derived, Metadata::OneCopy},
+          std::vector<int>{2}, teissier_hlld_vbartB_point_labels);
+      pkg->AddField("teissier_hlld_vbartB_point", vbartB_point_m);
+
+      Metadata vbartB_avg_m(
+          {Metadata::Face, Metadata::Derived, Metadata::OneCopy,
+          Metadata::FillGhost},
+          std::vector<int>{2}, teissier_hlld_vbartB_avg_labels);
+      pkg->AddField("teissier_hlld_vbartB_avg", vbartB_avg_m);
     } else if (uct_solver == "llf_line"){
       // stores the face LLF speed af needed for EMF edge construction formula Teissier Eqs. (50 - 51)
       // gives us 3 face vectors
       //             ax-face                ay-face                 az-face
       //            (TE::F1, 0),          (TE::F2, 0),            (TE::F3, 0)
       Metadata teissier_llf_speed_m(
-          {Metadata::Face, Metadata::Derived, Metadata::OneCopy,
-           Metadata::FillGhost});
+          {Metadata::Face, Metadata::Derived, Metadata::OneCopy});
       pkg->AddField("teissier_llf_speed", teissier_llf_speed_m);
 
       // for two transverse E-field components for both L/R face states (point-valued storage)
@@ -1127,8 +1240,7 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
                           // | F2   |   E_z   |   E_x   |
                           // | F3   |   E_x   |   E_y   |
       Metadata teissier_eface_point_m(
-          {Metadata::Face, Metadata::Derived, Metadata::OneCopy,
-           Metadata::FillGhost},
+          {Metadata::Face, Metadata::Derived, Metadata::OneCopy},
           std::vector<int>{4},
           teissier_eface_labels);
       pkg->AddField("teissier_eface_point", teissier_eface_point_m);

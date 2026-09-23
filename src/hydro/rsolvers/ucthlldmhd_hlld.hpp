@@ -27,6 +27,7 @@
 #include "../../main.hpp"
 #include "interface/variable_pack.hpp"
 #include "rsolvers.hpp"
+#include "uctmhd_point_state.hpp"
 
 using TE = parthenon::TopologicalElement;
 
@@ -38,10 +39,336 @@ struct UCTHLLDCons1D {
   Real d, mx, my, mz, e, by, bz;
 };
 
+struct UCTHLLDPrim1D {
+  Real d, vx, vy, vz, p, bx, by, bz;
+};
+
+struct UCTHLLDStar1D {
+  UCTHLLDCons1D u;
+  Real vb;
+};
+
+struct UCTHLLDPointAux {
+  Real aL, aR, dL, dR, vT1, vT2;
+};
+
+struct UCTHLLDPointResult {
+  UCTMHDPointFlux flux;
+  UCTHLLDPointAux aux;
+};
+
 #define SMALL_NUMBER 1.0e-8
 
 template <>
 struct Riemann<Fluid::ucthlldmhd, RiemannSolver::hlld> {
+  static KOKKOS_INLINE_FUNCTION UCTHLLDCons1D
+  PointConserved1D(const UCTHLLDPrim1D &w, const Real igm1,
+                   const Real magnetic_pressure) {
+    UCTHLLDCons1D u;
+    u.d = w.d;
+    u.mx = w.vx * u.d;
+    u.my = w.vy * u.d;
+    u.mz = w.vz * u.d;
+    u.e = w.p * igm1 +
+          0.5 * w.d * (SQR(w.vx) + (SQR(w.vy) + SQR(w.vz))) +
+          magnetic_pressure;
+    u.by = w.by;
+    u.bz = w.bz;
+    return u;
+  }
+
+  static KOKKOS_INLINE_FUNCTION UCTHLLDCons1D
+  PhysicalFlux1D(const UCTHLLDPrim1D &w, const UCTHLLDCons1D &u,
+                 const Real total_pressure, const Real bxsq) {
+    UCTHLLDCons1D f;
+    f.d = u.mx;
+    f.mx = u.mx * w.vx + total_pressure - bxsq;
+    f.my = u.my * w.vx - w.bx * u.by;
+    f.mz = u.mz * w.vx - w.bx * u.bz;
+    f.e = w.vx * (u.e + total_pressure - bxsq) -
+          w.bx * (w.vy * u.by + w.vz * u.bz);
+    f.by = u.by * w.vx - w.bx * w.vy;
+    f.bz = u.bz * w.vx - w.bx * w.vz;
+    return f;
+  }
+
+  static KOKKOS_INLINE_FUNCTION UCTHLLDStar1D
+  StarState1D(const UCTHLLDPrim1D &w, const UCTHLLDCons1D &u,
+              const Real sd, const Real sdm, const Real sm,
+              const Real total_pressure, const Real star_total_pressure,
+              const Real bxsq) {
+    UCTHLLDStar1D star;
+    const Real sdm_inv = 1.0 / sdm;
+    star.u.d = u.d * sd * sdm_inv;
+    const Real star_d_inv = 1.0 / star.u.d;
+    star.u.mx = star.u.d * sm;
+
+    const Real denom = u.d * sd * sdm - bxsq;
+    if (std::abs(denom) < SMALL_NUMBER * star_total_pressure) {
+      star.u.my = star.u.d * w.vy;
+      star.u.mz = star.u.d * w.vz;
+      star.u.by = u.by;
+      star.u.bz = u.bz;
+    } else {
+      Real tmp = w.bx * (sd - sdm) / denom;
+      star.u.my = star.u.d * (w.vy - u.by * tmp);
+      star.u.mz = star.u.d * (w.vz - u.bz * tmp);
+      tmp = (u.d * SQR(sd) - bxsq) / denom;
+      star.u.by = u.by * tmp;
+      star.u.bz = u.bz * tmp;
+    }
+
+    star.vb = (star.u.mx * w.bx +
+               (star.u.my * star.u.by + star.u.mz * star.u.bz)) *
+              star_d_inv;
+    star.u.e =
+        (sd * u.e - total_pressure * w.vx + star_total_pressure * sm +
+         w.bx * (w.vx * w.bx + (w.vy * u.by + w.vz * u.bz) - star.vb)) *
+        sdm_inv;
+    return star;
+  }
+
+  static KOKKOS_INLINE_FUNCTION void
+  AddJump1D(UCTHLLDCons1D &f, const Real speed, const UCTHLLDCons1D &to,
+            const UCTHLLDCons1D &from) {
+    // Stage the jump before flux addition, as in the original solver.
+    UCTHLLDCons1D jump;
+    jump.d = speed * (to.d - from.d);
+    jump.mx = speed * (to.mx - from.mx);
+    jump.my = speed * (to.my - from.my);
+    jump.mz = speed * (to.mz - from.mz);
+    jump.e = speed * (to.e - from.e);
+    jump.by = speed * (to.by - from.by);
+    jump.bz = speed * (to.bz - from.bz);
+    f.d += jump.d;
+    f.mx += jump.mx;
+    f.my += jump.my;
+    f.mz += jump.mz;
+    f.e += jump.e;
+    f.by += jump.by;
+    f.bz += jump.bz;
+  }
+
+  // Scalar HLLD solve for one Teissier point face. Inputs and outputs retain
+  // physical component ordering; the local HLLD algebra uses cyclic
+  // normal/tangential ordering matching the original team solver.
+  template <int DIR>
+  static KOKKOS_INLINE_FUNCTION UCTHLLDPointResult
+  SolvePointFace(const UCTMHDPointPrimitive &wl,
+                 const UCTMHDPointPrimitive &wr,
+                 const AdiabaticCTMHDEOS &eos) {
+    static_assert(DIR == X1DIR || DIR == X2DIR || DIR == X3DIR,
+                  "UCT-HLLD face direction must be X1DIR, X2DIR, or X3DIR");
+
+    UCTHLLDPrim1D l, r;
+    l.d = wl.d;
+    l.p = wl.p;
+    r.d = wr.d;
+    r.p = wr.p;
+    if constexpr (DIR == X1DIR) {
+      l.vx = wl.v1;
+      l.vy = wl.v2;
+      l.vz = wl.v3;
+      r.vx = wr.v1;
+      r.vy = wr.v2;
+      r.vz = wr.v3;
+      l.bx = wl.b1;
+      l.by = wl.b2;
+      l.bz = wl.b3;
+      r.bx = wr.b1;
+      r.by = wr.b2;
+      r.bz = wr.b3;
+    } else if constexpr (DIR == X2DIR) {
+      l.vx = wl.v2;
+      l.vy = wl.v3;
+      l.vz = wl.v1;
+      r.vx = wr.v2;
+      r.vy = wr.v3;
+      r.vz = wr.v1;
+      l.bx = wl.b2;
+      l.by = wl.b3;
+      l.bz = wl.b1;
+      r.bx = wr.b2;
+      r.by = wr.b3;
+      r.bz = wr.b1;
+    } else {
+      l.vx = wl.v3;
+      l.vy = wl.v1;
+      l.vz = wl.v2;
+      r.vx = wr.v3;
+      r.vy = wr.v1;
+      r.vz = wr.v2;
+      l.bx = wl.b3;
+      l.by = wl.b1;
+      l.bz = wl.b2;
+      r.bx = wr.b3;
+      r.by = wr.b1;
+      r.bz = wr.b2;
+    }
+
+    const Real igm1 = 1.0 / (eos.GetGamma() - 1.0);
+    const Real bx = 0.5 * (l.bx + r.bx);
+    // The original solver evaluates wave speeds with each input normal field.
+    const Real cfl = eos.FastMagnetosonicSpeed(l.d, l.p, l.bx, l.by, l.bz);
+    const Real cfr = eos.FastMagnetosonicSpeed(r.d, r.p, r.bx, r.by, r.bz);
+    l.bx = bx;
+    r.bx = bx;
+    const Real bxsq = SQR(bx);
+    const Real pbl = 0.5 * (bxsq + (SQR(l.by) + SQR(l.bz)));
+    const Real pbr = 0.5 * (bxsq + (SQR(r.by) + SQR(r.bz)));
+    const Real ptl = l.p + pbl;
+    const Real ptr = r.p + pbr;
+    const UCTHLLDCons1D ul = PointConserved1D(l, igm1, pbl);
+    const UCTHLLDCons1D ur = PointConserved1D(r, igm1, pbr);
+
+    const Real sl = std::min(l.vx - cfl, r.vx - cfr);
+    const Real sr = std::max(l.vx + cfl, r.vx + cfr);
+    const Real sdl = sl - l.vx;
+    const Real sdr = sr - r.vx;
+    const Real sm =
+        (sdr * ur.mx - sdl * ul.mx + (ptl - ptr)) /
+        (sdr * ur.d - sdl * ul.d);
+    const Real sdml = sl - sm;
+    const Real sdmr = sr - sm;
+    // Match the reciprocal multiplication used by the original star states.
+    const Real sdml_inv = 1.0 / sdml;
+    const Real sdmr_inv = 1.0 / sdmr;
+    const Real dlstar = ul.d * sdl * sdml_inv;
+    const Real drstar = ur.d * sdr * sdmr_inv;
+    const Real sqrtdl = std::sqrt(dlstar);
+    const Real sqrtdr = std::sqrt(drstar);
+    const Real slstar = sm - std::abs(bx) / sqrtdl;
+    const Real srstar = sm + std::abs(bx) / sqrtdr;
+
+    UCTHLLDPointResult result;
+    {
+      constexpr Real uct_eps = 1.0e-9;
+      Real nuS = 0.0;
+      if (std::abs(srstar - slstar) > uct_eps * std::abs(sr - sl)) {
+        nuS = (std::abs(srstar) - std::abs(slstar)) / (srstar - slstar);
+      }
+      const Real nuL = (slstar + sl) / (std::abs(slstar) + std::abs(sl));
+      const Real nuR = (srstar + sr) / (std::abs(srstar) + std::abs(sr));
+      const Real tchiL =
+          ((l.vx - sm) * (sl - sm)) / (slstar + sl - 2.0 * sm);
+      const Real tchiR =
+          ((r.vx - sm) * (sr - sm)) / (srstar + sr - 2.0 * sm);
+      const Real alphaP = std::max(0.0, sr);
+      const Real alphaM = -std::min(0.0, sl);
+      result.aux.aL = 0.5 * (1.0 + nuS);
+      result.aux.aR = 0.5 * (1.0 - nuS);
+      result.aux.dL =
+          0.5 * (nuL - nuS) * tchiL +
+          0.5 * (std::abs(slstar) - nuS * slstar);
+      result.aux.dR =
+          0.5 * (nuR - nuS) * tchiR +
+          0.5 * (std::abs(srstar) - nuS * srstar);
+      result.aux.vT1 = (alphaP * l.vy + alphaM * r.vy) / (alphaP + alphaM);
+      result.aux.vT2 = (alphaP * l.vz + alphaM * r.vz) / (alphaP + alphaM);
+    }
+
+    UCTHLLDCons1D flux;
+    if (sl >= 0.0) {
+      flux = PhysicalFlux1D(l, ul, ptl, bxsq);
+    } else if (sr <= 0.0) {
+      flux = PhysicalFlux1D(r, ur, ptr, bxsq);
+    } else {
+      const Real ptstl = ptl + ul.d * sdl * (sm - l.vx);
+      const Real ptstr = ptr + ur.d * sdr * (sm - r.vx);
+      const Real ptst = 0.5 * (ptstr + ptstl);
+      if (slstar >= 0.0) {
+        const auto lst = StarState1D(l, ul, sdl, sdml, sm, ptl, ptst, bxsq);
+        flux = PhysicalFlux1D(l, ul, ptl, bxsq);
+        AddJump1D(flux, sl, lst.u, ul);
+      } else if (srstar <= 0.0) {
+        const auto rst = StarState1D(r, ur, sdr, sdmr, sm, ptr, ptst, bxsq);
+        flux = PhysicalFlux1D(r, ur, ptr, bxsq);
+        AddJump1D(flux, sr, rst.u, ur);
+      } else {
+        const auto lst = StarState1D(l, ul, sdl, sdml, sm, ptl, ptst, bxsq);
+        const auto rst = StarState1D(r, ur, sdr, sdmr, sm, ptr, ptst, bxsq);
+        const Real invsumd = 1.0 / (sqrtdl + sqrtdr);
+        const Real bxsig = (bx > 0.0 ? 1.0 : -1.0);
+        const Real lst_d_inv = 1.0 / lst.u.d;
+        const Real rst_d_inv = 1.0 / rst.u.d;
+        const Real vdst_y =
+            invsumd * (sqrtdl * (lst.u.my * lst_d_inv) +
+                       sqrtdr * (rst.u.my * rst_d_inv) +
+                       bxsig * (rst.u.by - lst.u.by));
+        const Real vdst_z =
+            invsumd * (sqrtdl * (lst.u.mz * lst_d_inv) +
+                       sqrtdr * (rst.u.mz * rst_d_inv) +
+                       bxsig * (rst.u.bz - lst.u.bz));
+        const Real bdst_y =
+            invsumd * (sqrtdl * rst.u.by + sqrtdr * lst.u.by +
+                       bxsig * sqrtdl * sqrtdr *
+                           ((rst.u.my * rst_d_inv) - (lst.u.my * lst_d_inv)));
+        const Real bdst_z =
+            invsumd * (sqrtdl * rst.u.bz + sqrtdr * lst.u.bz +
+                       bxsig * sqrtdl * sqrtdr *
+                           ((rst.u.mz * rst_d_inv) - (lst.u.mz * lst_d_inv)));
+        // Preserve the original left double-star momentum dot product, even
+        // when selecting the right flux. Cancelling density changes rounding.
+        const Real ldst_my = lst.u.d * vdst_y;
+        const Real ldst_mz = lst.u.d * vdst_z;
+        const Real vbdst =
+            sm * bx + (ldst_my * bdst_y + ldst_mz * bdst_z) / lst.u.d;
+
+        if (sm >= 0.0) {
+          UCTHLLDCons1D ldst;
+          ldst.d = lst.u.d;
+          ldst.mx = lst.u.mx;
+          ldst.my = ldst_my;
+          ldst.mz = ldst_mz;
+          ldst.by = bdst_y;
+          ldst.bz = bdst_z;
+          ldst.e = lst.u.e - sqrtdl * bxsig * (lst.vb - vbdst);
+          flux = PhysicalFlux1D(l, ul, ptl, bxsq);
+          AddJump1D(flux, sl, lst.u, ul);
+          AddJump1D(flux, slstar, ldst, lst.u);
+        } else {
+          UCTHLLDCons1D rdst;
+          rdst.d = rst.u.d;
+          rdst.mx = rst.u.mx;
+          rdst.my = rst.u.d * vdst_y;
+          rdst.mz = rst.u.d * vdst_z;
+          rdst.by = bdst_y;
+          rdst.bz = bdst_z;
+          rdst.e = rst.u.e + sqrtdr * bxsig * (rst.vb - vbdst);
+          flux = PhysicalFlux1D(r, ur, ptr, bxsq);
+          AddJump1D(flux, sr, rst.u, ur);
+          AddJump1D(flux, srstar, rdst, rst.u);
+        }
+      }
+    }
+
+    result.flux.d = flux.d;
+    result.flux.e = flux.e;
+    if constexpr (DIR == X1DIR) {
+      result.flux.m1 = flux.mx;
+      result.flux.m2 = flux.my;
+      result.flux.m3 = flux.mz;
+      result.flux.b1 = 0.0;
+      result.flux.b2 = flux.by;
+      result.flux.b3 = flux.bz;
+    } else if constexpr (DIR == X2DIR) {
+      result.flux.m2 = flux.mx;
+      result.flux.m3 = flux.my;
+      result.flux.m1 = flux.mz;
+      result.flux.b2 = 0.0;
+      result.flux.b3 = flux.by;
+      result.flux.b1 = flux.bz;
+    } else {
+      result.flux.m3 = flux.mx;
+      result.flux.m1 = flux.my;
+      result.flux.m2 = flux.mz;
+      result.flux.b3 = 0.0;
+      result.flux.b1 = flux.by;
+      result.flux.b2 = flux.bz;
+    }
+    return result;
+  }
+
   template <bool point_flux, typename FluxPack>
   static KOKKOS_INLINE_FUNCTION void
   Solve(parthenon::team_mbr_t const &member, const int k, const int j, const int il,

@@ -79,6 +79,9 @@ void InitUserMeshData(Mesh *mesh, ParameterInput *pin) {
   ang_2 = pin->GetOrAddReal("problem/cpaw", "ang_2", -999.9);
   ang_3 = pin->GetOrAddReal("problem/cpaw", "ang_3", -999.9);
   Real dir = pin->GetOrAddReal("problem/cpaw", "dir", 1); // right(1)/left(2) polarization
+  const int mode = pin->GetOrAddInteger("problem/cpaw", "mode", 1);
+  PARTHENON_REQUIRE_THROWS(
+      mode > 0, "CPAW mode must be a positive integer");
   Real gam = pin->GetReal("hydro", "gamma");
   gm1 = (gam - 1.0);
   pres = pin->GetReal("problem/cpaw", "pres");
@@ -116,7 +119,7 @@ void InitUserMeshData(Mesh *mesh, ParameterInput *pin) {
   if (f3 && ang_2 != 0.0) lambda = std::min(lambda, x3);
 
   // Initialize k_parallel
-  k_par = 2.0 * (M_PI) / lambda;
+  k_par = 2.0 * M_PI * mode / lambda;
   v_perp = b_perp / std::sqrt(den);
 
   if (dir == 1) { // right polarization
@@ -130,7 +133,9 @@ void InitUserMeshData(Mesh *mesh, ParameterInput *pin) {
   const Real wave_speed = std::abs(v_par + fac * b_par / std::sqrt(den));
   if (wave_speed > 1e-12) {
     const Real nperiods = pin->GetReal("parthenon/time", "tlim");
-    pin->SetReal("parthenon/time", "tlim", lambda / wave_speed * nperiods);
+    const Real wave_wavelength = lambda / mode;
+    pin->SetReal("parthenon/time", "tlim",
+                 wave_wavelength / wave_speed * nperiods);
   }
 }
 
@@ -152,8 +157,8 @@ void UserWorkAfterLoop(Mesh *mesh, ParameterInput *pin, parthenon::SimTime &tm) 
   for (auto &pmb : mesh->block_list) {
     const auto hydro_pkg = pmb->packages.Get("Hydro");
     const auto fluid = hydro_pkg->Param<Fluid>("fluid");
-    const bool fourth_order_init =
-        mhd_pgen_utils::UseFourthOrderFVInitialization(pmb.get());
+    const bool high_order_init =
+        mhd_pgen_utils::UseHighOrderFVInitialization(pmb.get());
 
     //  Compute errors
     IndexRange ib = pmb->cellbounds.GetBoundsI(IndexDomain::interior);
@@ -167,10 +172,10 @@ void UserWorkAfterLoop(Mesh *mesh, ParameterInput *pin, parthenon::SimTime &tm) 
         pmb->cellbounds.ncellsi(IndexDomain::entire));
 
     auto &rc = pmb->meshblock_data.Get(); // get base container
-    if (fourth_order_init) {
+    if (high_order_init) {
       auto &u_dev_face = rc->Get("Bface").data;
       auto Bface_ref = u_dev_face.GetHostMirrorAndCopy();
-      mhd_pgen_utils::InitializeFourthOrderSmoothMHD(
+      mhd_pgen_utils::InitializeHighOrderSmoothMHD(
           pmb.get(), u_ref, Bface_ref, EvaluatePointConserved,
           EvaluateVectorPotential, true);
     } else {
@@ -220,7 +225,7 @@ void UserWorkAfterLoop(Mesh *mesh, ParameterInput *pin, parthenon::SimTime &tm) 
     }
   
     // for ctmhd, fill up IB1:IB3 with the proper cell-center derived values
-    if (!fourth_order_init &&
+    if (!high_order_init &&
         (fluid == Fluid::ctmhd || fluid == Fluid::ucthlldmhd)) {
       auto &u_dev_face = rc->Get("Bface").data;
       auto Bface = u_dev_face.GetHostMirrorAndCopy();
@@ -347,8 +352,8 @@ void ProblemGenerator(MeshBlock *pmb, ParameterInput * /*pin*/) {
 
   const auto hydro_pkg = pmb->packages.Get("Hydro");
   const auto fluid = hydro_pkg->Param<Fluid>("fluid");
-  const bool fourth_order_init =
-      mhd_pgen_utils::UseFourthOrderFVInitialization(pmb);
+  const bool high_order_init =
+      mhd_pgen_utils::UseHighOrderFVInitialization(pmb);
 
   const bool two_d = pmb->pmy_mesh->ndim < 3;
 
@@ -409,15 +414,15 @@ void ProblemGenerator(MeshBlock *pmb, ParameterInput * /*pin*/) {
     auto &u_dev_face = rc->Get("Bface").data;
     auto Bface = u_dev_face.GetHostMirrorAndCopy();
 
-    if (fourth_order_init) {
-      mhd_pgen_utils::InitializeFourthOrderSmoothMHD(
+    if (high_order_init) {
+      mhd_pgen_utils::InitializeHighOrderSmoothMHD(
           pmb, u, Bface, EvaluatePointConserved, EvaluateVectorPotential, true);
     } else {
       Bface_Fill_Cons(pmb, u, Bface);
     }
     u_dev_face.DeepCopy(Bface);
   }
-  if (!fourth_order_init) {
+  if (!high_order_init) {
     for (int k = kb.s; k <= kb.e; k++) {
       for (int j = jb.s; j <= jb.e; j++) {
         for (int i = ib.s; i <= ib.e; i++) {

@@ -4,7 +4,7 @@
 // Licensed under the BSD 3-Clause License (the "LICENSE").
 //========================================================================================
 //! \file uctmhd_llf.hpp
-//! \brief LLF Riemann solver for the Teissier UCT-LLF path.
+//! \brief Scalar LLF Riemann solver for the Teissier UCT-LLF path.
 
 #ifndef RSOLVERS_UCTMHD_LLF_HPP_
 #define RSOLVERS_UCTMHD_LLF_HPP_
@@ -14,10 +14,8 @@
 
 #include "../../eos/adiabatic_ctmhd.hpp"
 #include "../../main.hpp"
-#include "interface/variable_pack.hpp"
 #include "rsolvers.hpp"
-
-using TE = parthenon::TopologicalElement;
+#include "uctmhd_point_state.hpp"
 
 struct UCTLLFCons1D {
   Real d, mx, my, mz, e, by, bz;
@@ -25,119 +23,127 @@ struct UCTLLFCons1D {
 
 template <>
 struct Riemann<Fluid::ucthlldmhd, RiemannSolver::llf> {
-  template <bool point_flux, typename FluxPack>
-  static KOKKOS_INLINE_FUNCTION void
-  Solve(const parthenon::team_mbr_t &member, const int k, const int j,
-        const int il, const int iu, const int ivx,
-        const parthenon::ScratchPad2D<Real> &wl,
-        const parthenon::ScratchPad2D<Real> &wr, FluxPack &flux_out,
-        parthenon::VariablePack<Real> &llf_speed,
-        const AdiabaticCTMHDEOS &eos, const Real /*c_h*/) {
-    const int ivy = IV1 + ((ivx - IV1) + 1) % 3;
-    const int ivz = IV1 + ((ivx - IV1) + 2) % 3;
-    const int iBx = NHYDRO + ivx - IV1;
-    const int iBy = NHYDRO + ivy - IV1;
-    const int iBz = NHYDRO + ivz - IV1;
+  // Solve one face in physical component ordering. DIR is compile-time so the
+  // normal/tangential component selection introduces no runtime branch.
+  template <int DIR>
+  static KOKKOS_INLINE_FUNCTION UCTMHDPointFlux
+  SolveFace(const UCTMHDPointPrimitive &wl, const UCTMHDPointPrimitive &wr,
+            Real &llf_speed, const AdiabaticCTMHDEOS &eos) {
+    static_assert(DIR == X1DIR || DIR == X2DIR || DIR == X3DIR,
+                  "UCT-LLF face direction must be X1DIR, X2DIR, or X3DIR");
+
+    // Use the original cyclic ordering and staged flux sums to preserve
+    // source-level floating-point evaluation while keeping scalar inputs.
+    UCTMHDPointPrimitive l = wl, r = wr;
+    if constexpr (DIR == X2DIR) {
+      l.v1 = wl.v2;
+      l.v2 = wl.v3;
+      l.v3 = wl.v1;
+      l.b1 = wl.b2;
+      l.b2 = wl.b3;
+      l.b3 = wl.b1;
+      r.v1 = wr.v2;
+      r.v2 = wr.v3;
+      r.v3 = wr.v1;
+      r.b1 = wr.b2;
+      r.b2 = wr.b3;
+      r.b3 = wr.b1;
+    } else if constexpr (DIR == X3DIR) {
+      l.v1 = wl.v3;
+      l.v2 = wl.v1;
+      l.v3 = wl.v2;
+      l.b1 = wl.b3;
+      l.b2 = wl.b1;
+      l.b3 = wl.b2;
+      r.v1 = wr.v3;
+      r.v2 = wr.v1;
+      r.v3 = wr.v2;
+      r.b1 = wr.b3;
+      r.b2 = wr.b1;
+      r.b3 = wr.b2;
+    }
     const Real igm1 = 1.0 / (eos.GetGamma() - 1.0);
-    constexpr int NCTMHD = 8;
 
-    parthenon::par_for_inner(member, il, iu, [&](const int i) {
-      Real wli[NCTMHD], wri[NCTMHD];
+    const Real bxi = 0.5 * (l.b1 + r.b1);
 
-      wli[IDN] = wl(IDN, i);
-      wli[IV1] = wl(ivx, i);
-      wli[IV2] = wl(ivy, i);
-      wli[IV3] = wl(ivz, i);
-      wli[IPR] = wl(IPR, i);
-      wli[IB1] = wl(iBx, i);
-      wli[IB2] = wl(iBy, i);
-      wli[IB3] = wl(iBz, i);
+    Real qa = l.d * l.v1;
+    Real qb = r.d * r.v1;
+    const Real qc =
+        0.5 * (SQR(l.b2) + SQR(l.b3) - SQR(bxi));
+    const Real qd =
+        0.5 * (SQR(r.b2) + SQR(r.b3) - SQR(bxi));
 
-      wri[IDN] = wr(IDN, i);
-      wri[IV1] = wr(ivx, i);
-      wri[IV2] = wr(ivy, i);
-      wri[IV3] = wr(ivz, i);
-      wri[IPR] = wr(IPR, i);
-      wri[IB1] = wr(iBx, i);
-      wri[IB2] = wr(iBy, i);
-      wri[IB3] = wr(iBz, i);
+    UCTLLFCons1D fsum;
+    fsum.d = qa + qb;
+    fsum.mx = qa * l.v1 + qb * r.v1 + qc + qd;
+    fsum.my = qa * l.v2 + qb * r.v2 -
+              bxi * (l.b2 + r.b2);
+    fsum.mz = qa * l.v3 + qb * r.v3 -
+              bxi * (l.b3 + r.b3);
+    fsum.by = l.b2 * l.v1 + r.b2 * r.v1 -
+              bxi * (l.v2 + r.v2);
+    fsum.bz = l.b3 * l.v1 + r.b3 * r.v1 -
+              bxi * (l.v3 + r.v3);
 
-      const Real bxi = 0.5 * (wli[IB1] + wri[IB1]);
+    const Real el =
+        l.p * igm1 +
+        0.5 * l.d *
+            (SQR(l.v1) + SQR(l.v2) + SQR(l.v3)) +
+        qc + SQR(bxi);
+    const Real er =
+        r.p * igm1 +
+        0.5 * r.d *
+            (SQR(r.v1) + SQR(r.v2) + SQR(r.v3)) +
+        qd + SQR(bxi);
+    fsum.mx += l.p + r.p;
+    fsum.e = (el + l.p + qc) * l.v1 +
+             (er + r.p + qd) * r.v1 -
+             bxi * (l.b2 * l.v2 + l.b3 * l.v3) -
+             bxi * (r.b2 * r.v2 + r.b3 * r.v3);
 
-      Real qa = wli[IDN] * wli[IV1];
-      Real qb = wri[IDN] * wri[IV1];
-      const Real qc =
-          0.5 * (SQR(wli[IB2]) + SQR(wli[IB3]) - SQR(bxi));
-      const Real qd =
-          0.5 * (SQR(wri[IB2]) + SQR(wri[IB3]) - SQR(bxi));
+    qa = eos.FastMagnetosonicSpeed(l.d, l.p, l.b1,
+                                   l.b2, l.b3);
+    qb = eos.FastMagnetosonicSpeed(r.d, r.p, r.b1,
+                                   r.b2, r.b3);
+    const Real a =
+        fmax(fabs(l.v1) + qa, fabs(r.v1) + qb);
 
-      UCTLLFCons1D fsum;
-      fsum.d = qa + qb;
-      fsum.mx = qa * wli[IV1] + qb * wri[IV1] + qc + qd;
-      fsum.my = qa * wli[IV2] + qb * wri[IV2] -
-                bxi * (wli[IB2] + wri[IB2]);
-      fsum.mz = qa * wli[IV3] + qb * wri[IV3] -
-                bxi * (wli[IB3] + wri[IB3]);
-      fsum.by = wli[IB2] * wli[IV1] + wri[IB2] * wri[IV1] -
-                bxi * (wli[IV2] + wri[IV2]);
-      fsum.bz = wli[IB3] * wli[IV1] + wri[IB3] * wri[IV1] -
-                bxi * (wli[IV3] + wri[IV3]);
+    UCTLLFCons1D du;
+    du.d = a * (r.d - l.d);
+    du.mx = a * (r.d * r.v1 - l.d * l.v1);
+    du.my = a * (r.d * r.v2 - l.d * l.v2);
+    du.mz = a * (r.d * r.v3 - l.d * l.v3);
+    du.e = a * (er - el);
+    du.by = a * (r.b2 - l.b2);
+    du.bz = a * (r.b3 - l.b3);
 
-      const Real el =
-          wli[IPR] * igm1 +
-          0.5 * wli[IDN] *
-              (SQR(wli[IV1]) + SQR(wli[IV2]) + SQR(wli[IV3])) +
-          qc + SQR(bxi);
-      const Real er =
-          wri[IPR] * igm1 +
-          0.5 * wri[IDN] *
-              (SQR(wri[IV1]) + SQR(wri[IV2]) + SQR(wri[IV3])) +
-          qd + SQR(bxi);
-      fsum.mx += wli[IPR] + wri[IPR];
-      fsum.e = (el + wli[IPR] + qc) * wli[IV1] +
-               (er + wri[IPR] + qd) * wri[IV1] -
-               bxi * (wli[IB2] * wli[IV2] + wli[IB3] * wli[IV3]) -
-               bxi * (wri[IB2] * wri[IV2] + wri[IB3] * wri[IV3]);
-
-      qa = eos.FastMagnetosonicSpeed(wli[IDN], wli[IPR], wli[IB1],
-                                     wli[IB2], wli[IB3]);
-      qb = eos.FastMagnetosonicSpeed(wri[IDN], wri[IPR], wri[IB1],
-                                     wri[IB2], wri[IB3]);
-      const Real a =
-          fmax(fabs(wli[IV1]) + qa, fabs(wri[IV1]) + qb);
-
-      UCTLLFCons1D du;
-      du.d = a * (wri[IDN] - wli[IDN]);
-      du.mx = a * (wri[IDN] * wri[IV1] - wli[IDN] * wli[IV1]);
-      du.my = a * (wri[IDN] * wri[IV2] - wli[IDN] * wli[IV2]);
-      du.mz = a * (wri[IDN] * wri[IV3] - wli[IDN] * wli[IV3]);
-      du.e = a * (er - el);
-      du.by = a * (wri[IB2] - wli[IB2]);
-      du.bz = a * (wri[IB3] - wli[IB3]);
-
-      const auto face =
-          ivx == IV1 ? TE::F1 : (ivx == IV2 ? TE::F2 : TE::F3);
-      if constexpr (point_flux) {
-        flux_out(face, IDN, k, j, i) = 0.5 * (fsum.d - du.d);
-        flux_out(face, ivx, k, j, i) = 0.5 * (fsum.mx - du.mx);
-        flux_out(face, ivy, k, j, i) = 0.5 * (fsum.my - du.my);
-        flux_out(face, ivz, k, j, i) = 0.5 * (fsum.mz - du.mz);
-        flux_out(face, IEN, k, j, i) = 0.5 * (fsum.e - du.e);
-        flux_out(face, iBx, k, j, i) = 0.0;
-        flux_out(face, iBy, k, j, i) = 0.5 * (fsum.by - du.by);
-        flux_out(face, iBz, k, j, i) = 0.5 * (fsum.bz - du.bz);
-      } else {
-        flux_out.flux(ivx, IDN, k, j, i) = 0.5 * (fsum.d - du.d);
-        flux_out.flux(ivx, ivx, k, j, i) = 0.5 * (fsum.mx - du.mx);
-        flux_out.flux(ivx, ivy, k, j, i) = 0.5 * (fsum.my - du.my);
-        flux_out.flux(ivx, ivz, k, j, i) = 0.5 * (fsum.mz - du.mz);
-        flux_out.flux(ivx, IEN, k, j, i) = 0.5 * (fsum.e - du.e);
-        flux_out.flux(ivx, iBx, k, j, i) = 0.0;
-        flux_out.flux(ivx, iBy, k, j, i) = 0.5 * (fsum.by - du.by);
-        flux_out.flux(ivx, iBz, k, j, i) = 0.5 * (fsum.bz - du.bz);
-      }
-      llf_speed(face, 0, k, j, i) = a;
-    });
+    llf_speed = a;
+    UCTMHDPointFlux f;
+    f.d = 0.5 * (fsum.d - du.d);
+    f.e = 0.5 * (fsum.e - du.e);
+    if constexpr (DIR == X1DIR) {
+      f.m1 = 0.5 * (fsum.mx - du.mx);
+      f.m2 = 0.5 * (fsum.my - du.my);
+      f.m3 = 0.5 * (fsum.mz - du.mz);
+      f.b1 = 0.0;
+      f.b2 = 0.5 * (fsum.by - du.by);
+      f.b3 = 0.5 * (fsum.bz - du.bz);
+    } else if constexpr (DIR == X2DIR) {
+      f.m2 = 0.5 * (fsum.mx - du.mx);
+      f.m3 = 0.5 * (fsum.my - du.my);
+      f.m1 = 0.5 * (fsum.mz - du.mz);
+      f.b2 = 0.0;
+      f.b3 = 0.5 * (fsum.by - du.by);
+      f.b1 = 0.5 * (fsum.bz - du.bz);
+    } else if constexpr (DIR == X3DIR) {
+      f.m3 = 0.5 * (fsum.mx - du.mx);
+      f.m1 = 0.5 * (fsum.my - du.my);
+      f.m2 = 0.5 * (fsum.mz - du.mz);
+      f.b3 = 0.0;
+      f.b1 = 0.5 * (fsum.by - du.by);
+      f.b2 = 0.5 * (fsum.bz - du.bz);
+    }
+    return f;
   }
 };
 

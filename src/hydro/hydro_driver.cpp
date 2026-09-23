@@ -570,12 +570,14 @@ TaskCollection HydroDriver::MakeTaskCollection(BlockList_t &blocks, int stage) {
         hydro_pkg->Param<Reconstruction>("reconstruction");
 
 
-    const bool teissier4 =
-        fluid == Fluid::ucthlldmhd && convergence_order == 4;
+    const bool teissier_high_order =
+        fluid == Fluid::ucthlldmhd && convergence_order > 2;
+    const bool teissier_hlld_point =
+        teissier_high_order && uct_solver == "hlld_point";
     // -------------- CT step 1 (recon + riemann) --------------
     TaskID calc_flux = none;
     TaskID calc_recon = none;
-    if (teissier4) {
+    if (teissier_high_order) {
       calc_recon = tl.AddTask(
           none,
           Hydro::HIGHORDER::ReconstructFaceAveragesTeissier, mu0.get());
@@ -586,46 +588,37 @@ TaskCollection HydroDriver::MakeTaskCollection(BlockList_t &blocks, int stage) {
       calc_flux = tl.AddTask(none, calc_flux_fun, mu0);
     }
 
-    // The fourth-order face AtoP and point Riemann solves only produce point
-    // data on this block's interior faces. Exchange those completed fields
-    // before using transverse stencils or reconstructing them to edges.
+    // The fourth-order HLLD-point route communicates the point magnetic field
+    // and VBART required by its five-point edge reconstruction. The line routes
+    // instead generate their order-dependent point halos locally.
     TaskID point_face_bounds = calc_flux;
-    if (teissier4) {
-      if (uct_solver=="hlld_point") {
-        auto &point_faces = pmesh->mesh_data.AddShallow(
-            "teissier_point_faces", mu0,
-            std::vector<std::string>{"consflux_point", "uct_hlld", "Bface_point"});
-        auto start_point_bnd =
-            tl.AddTask(none, parthenon::StartReceiveBoundBufs<any>, point_faces);
-        point_face_bounds = parthenon::AddBoundaryExchangeTasks(
-            calc_flux | start_point_bnd, tl, point_faces, pmesh->multilevel);
-      } else if (uct_solver == "llf_line") {
-        auto &point_faces = pmesh->mesh_data.AddShallow(
-            "teissier_point_faces", mu0,
-            std::vector<std::string>{"consflux_point", "teissier_llf_speed",
-                                     "teissier_eface_point"});
-        auto start_point_bnd =
-            tl.AddTask(none, parthenon::StartReceiveBoundBufs<any>, point_faces);
-        point_face_bounds = parthenon::AddBoundaryExchangeTasks(
-            calc_flux | start_point_bnd, tl, point_faces, pmesh->multilevel);
-      }
+    if (teissier_hlld_point) {
+      auto &point_faces = pmesh->mesh_data.AddShallow(
+          "teissier_point_faces", mu0,
+          std::vector<std::string>{"Bface_point", "teissier_hlld_vbart"});
+      auto start_point_bnd =
+          tl.AddTask(none, parthenon::StartReceiveBoundBufs<any>, point_faces);
+      point_face_bounds = parthenon::AddBoundaryExchangeTasks(
+          calc_flux | start_point_bnd, tl, point_faces, pmesh->multilevel);
     }
 
     // -------------- high-order-necessary computation (point value -> area average) --------------
     TaskID calc_pointToAreaAve = calc_flux;
-    if (teissier4){
+    if (teissier_high_order){
       calc_pointToAreaAve = tl.AddTask(
-          point_face_bounds, Hydro::HIGHORDER::PointToAreaAverage, mu0.get());
+          calc_flux, Hydro::HIGHORDER::PointToAreaAverage, mu0.get());
     }
 
     // The LLF edge construction consumes face-area-averaged electric fields.
-    // First convert the exchanged point fields, then exchange the averages so
-    // finite-volume reconstruction to an edge has valid neighboring faces.
-    TaskID calc_EMF_PtoA = point_face_bounds;
-    TaskID area_emf_bounds = point_face_bounds;
-    TaskID intermediate_bounds_done = point_face_bounds;
-    if (teissier4 && uct_solver == "llf_line") {
-      calc_EMF_PtoA = tl.AddTask(
+    // LLF point fields include the locally computed transverse halo required
+    // by the selected order.
+    // Convert them to face averages, then exchange those averages because the
+    // subsequent WENO edge reconstruction requires a wider stencil.
+    TaskID calc_LLF_EMF_PtoA = point_face_bounds;
+    TaskID area_LLF_emf_bounds = point_face_bounds;
+    TaskID intermediate_LLF_bounds_done = point_face_bounds;
+    if (teissier_high_order && uct_solver == "llf_line") {
+      calc_LLF_EMF_PtoA = tl.AddTask(
           point_face_bounds,
           Hydro::HIGHORDER::PointElectricFieldsToAreaAverage, mu0.get());
 
@@ -635,16 +628,37 @@ TaskCollection HydroDriver::MakeTaskCollection(BlockList_t &blocks, int stage) {
       auto start_area_emf_bnd = tl.AddTask(
           point_face_bounds, parthenon::StartReceiveBoundBufs<any>,
           area_efaces);
-      area_emf_bounds = parthenon::AddBoundaryExchangeTasks(
-          calc_EMF_PtoA | start_area_emf_bnd, tl, area_efaces,
+      area_LLF_emf_bounds = parthenon::AddBoundaryExchangeTasks(
+          calc_LLF_EMF_PtoA | start_area_emf_bnd, tl, area_efaces,
           pmesh->multilevel);
-      intermediate_bounds_done = area_emf_bounds;
+      intermediate_LLF_bounds_done = area_LLF_emf_bounds;
+    }
+
+    TaskID calc_HLLD_products_PtoA = point_face_bounds;
+    TaskID area_HLLD_products_bounds = point_face_bounds;
+    TaskID intermediate_HLLD_products_bounds_done = point_face_bounds;
+    if (teissier_high_order && uct_solver == "hlld_line") {
+      calc_HLLD_products_PtoA = tl.AddTask(
+          point_face_bounds,
+          Hydro::HIGHORDER::PointHLLDProductsToAreaAverage, mu0.get());
+
+      auto &area_products = pmesh->mesh_data.AddShallow(
+          "teissier_area_hlld_products", mu0,
+          std::vector<std::string>{"teissier_hlld_vbartB_avg"});
+      auto start_area_products_bnd = tl.AddTask(
+          point_face_bounds, parthenon::StartReceiveBoundBufs<any>,
+          area_products);
+      area_HLLD_products_bounds = parthenon::AddBoundaryExchangeTasks(
+          calc_HLLD_products_PtoA | start_area_products_bnd, tl, area_products,
+          pmesh->multilevel);
+      intermediate_HLLD_products_bounds_done = area_HLLD_products_bounds;
     }
 
     // The second-order route can post its normal state receives immediately.
-    // Teissier4 performs an additional Bface-only exchange after the update, so
-    // its full-state receives must wait until that exchange has completed.
-    if (!teissier4) {
+    // High-order Teissier routes perform an additional Bface-only exchange after
+    // the update, so their cell-state receives must wait until that exchange has
+    // completed.
+    if (!teissier_high_order) {
       start_bnd =
           tl.AddTask(none, parthenon::StartReceiveBoundBufs<any>, mu0);
     }
@@ -654,24 +668,33 @@ TaskCollection HydroDriver::MakeTaskCollection(BlockList_t &blocks, int stage) {
     if (fluid == Fluid::ctmhd) {
       ct_emf = tl.AddTask(
           calc_flux, Hydro::CTMHD::Assemble_Corner_EMF, mu0.get());
-    } else if (teissier4) {
-      if (uct_solver == "hlld_point") {
+    } else if (teissier_high_order) {
+      if (teissier_hlld_point) {
         ct_emf = tl.AddTask(
             point_face_bounds,
             Hydro::UCTHLLDMHD::Assemble_HLLD_Point_Edge_EMF,
             mu0.get());
+      } else if (uct_solver == "hlld_line") {
+        ct_emf = tl.AddTask(
+            area_HLLD_products_bounds,
+            Hydro::UCTHLLDMHD::Assemble_HLLD_Line_Edge_EMF,
+            mu0.get());
       } else if (uct_solver == "llf_line") {
         ct_emf = tl.AddTask(
-            area_emf_bounds,
+            area_LLF_emf_bounds,
             Hydro::UCTLLFMHD::Assemble_LLF_Line_Edge_EMF,
             mu0.get());
       } else {
-        PARTHENON_FAIL("Requested fourth-order UCT solver is not implemented.");
+        PARTHENON_FAIL("Requested high-order UCT solver is not implemented.");
       }
     } else if (fluid == Fluid::ucthlldmhd){
       if (reconstruction == Reconstruction::weno3) {
         ct_emf = tl.AddTask(
             calc_flux, Hydro::UCTHLLDMHD::Assemble_HLLD_WENO3_Edge_EMF,
+            mu0.get());
+      } else if (reconstruction == Reconstruction::weno3js) {
+        ct_emf = tl.AddTask(
+            calc_flux, Hydro::UCTHLLDMHD::Assemble_HLLD_WENO3JS_Edge_EMF,
             mu0.get());
       } else {
         ct_emf = tl.AddTask(
@@ -682,26 +705,26 @@ TaskCollection HydroDriver::MakeTaskCollection(BlockList_t &blocks, int stage) {
 
     // dont need this for llf_line route
     TaskID line_emf = ct_emf;
-    if (teissier4 && uct_solver=="hlld_point") {
+    if (teissier_hlld_point) {
       line_emf = tl.AddTask(
           ct_emf, Hydro::HIGHORDER::PointEmfToLineAverage, mu0.get());
     }
 
 
-    // TODO(pgrete) figure out what to do about the sources from the first stage
-    // that are potentially disregarded when the (m)hd fluxes are corrected in the second
-    // stage.
-
-    // TODO (jwysong) this will become important later on
-    // but not going to mess with it for now
     TaskID flux_emf_ready = line_emf | calc_pointToAreaAve;
     TaskID periodic_outputs_ready = flux_emf_ready;
-    if (teissier4) {
+    if (teissier_high_order) {
       periodic_outputs_ready = tl.AddTask(
           flux_emf_ready,
           Hydro::HIGHORDER::ReconcileSelfPeriodicFluxesAndEmfs,
           mu0.get());
     }
+
+    // TODO(pgrete) figure out what to do about the sources from the first stage
+    // that are potentially disregarded when the (m)hd fluxes are corrected in the second
+    // stage.
+    // TODO (jwysong) this will become important later on
+    // but not going to mess with it for now
     TaskID first_order_flux_correct = periodic_outputs_ready;
     if (hydro_pkg->Param<bool>("first_order_flux_correct")) {
       auto *first_order_flux_correct_fun =
@@ -765,8 +788,8 @@ TaskCollection HydroDriver::MakeTaskCollection(BlockList_t &blocks, int stage) {
     // performance for various tests (static, amr, block sizes) and then decide on the
     // best impl. Go with default call (split local/nonlocal) for now.
     TaskID state_bounds = none;
-    if (teissier4) {
-      // Fourth-order cell centering reaches beyond the nearest staggered face.
+    if (teissier_high_order) {
+      // High-order cell centering reaches beyond the nearest staggered face.
       // Exchange the newly evolved face field first so boundary-adjacent cells
       // use current-stage Bface ghosts. Then center the interior magnetic field
       // and communicate that centered cell state to neighboring ghost cells.
@@ -779,7 +802,7 @@ TaskCollection HydroDriver::MakeTaskCollection(BlockList_t &blocks, int stage) {
           "teissier_centering_faces", mu0,
           std::vector<std::string>{"Bface"});
       auto start_centering_face_bnd = tl.AddTask(
-          intermediate_bounds_done,
+          intermediate_HLLD_products_bounds_done | intermediate_LLF_bounds_done,
           parthenon::StartReceiveBoundBufs<any>, centering_faces);
       auto centering_face_bounds = parthenon::AddBoundaryExchangeTasks(
           source_split_first_order | start_centering_face_bnd, tl,
@@ -788,11 +811,20 @@ TaskCollection HydroDriver::MakeTaskCollection(BlockList_t &blocks, int stage) {
       auto center_mag = tl.AddTask(
           centering_face_bounds, Hydro::CTMHD::CenterMagFieldTask,
           mu0.get());
+      // Only the updated cell-centered conserved state is needed after
+      // centering. Bface was exchanged immediately above, while the
+      // point-face and edge-construction fields are temporary RHS data that
+      // will be overwritten in the next stage. Avoid communicating all of
+      // those FillGhost fields again through the complete mu0 container.
+      auto &cell_state = pmesh->mesh_data.AddShallow(
+          "teissier_cell_state", mu0,
+          std::vector<std::string>{"cons"});
       auto start_state_bnd = tl.AddTask(
           centering_face_bounds,
-          parthenon::StartReceiveBoundBufs<any>, mu0);
+          parthenon::StartReceiveBoundBufs<any>, cell_state);
       state_bounds = parthenon::AddBoundaryExchangeTasks(
-          center_mag | start_state_bnd, tl, mu0, pmesh->multilevel);
+          center_mag | start_state_bnd, tl, cell_state,
+          pmesh->multilevel);
     } else {
       state_bounds = parthenon::AddBoundaryExchangeTasks(
           source_split_first_order | start_bnd, tl, mu0,

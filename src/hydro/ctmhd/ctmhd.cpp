@@ -476,7 +476,7 @@ void center_Mag_Field(MeshData<Real> *md) {
     // outermost cell ghost from Bface would therefore require a fourth face ghost.
     // Fourth-order ghost-cell magnetic averages are instead communicated after the
     // interior has been centered explicitly in the driver.
-    const auto domain = convergence_order == 4 ? IndexDomain::interior
+    const auto domain = convergence_order > 2 ? IndexDomain::interior
                                                 : IndexDomain::entire;
     IndexRange ib = md->GetBlockData(0)->GetBoundsI(domain);
     IndexRange jb = md->GetBlockData(0)->GetBoundsJ(domain);
@@ -522,6 +522,49 @@ void center_Mag_Field(MeshData<Real> *md) {
                     b3_ct = (1.0/24.0) * (
                         13.0*(Bface(TE::F3, 0, k+1, j, i) + Bface(TE::F3, 0, k, j, i)) -
                              (Bface(TE::F3, 0, k+2, j, i) + Bface(TE::F3, 0, k-1, j, i)));
+                }
+            } else if (convergence_order == 6){ // Teissier et al. Eq. (22)
+                b1_ct =
+                    (1.0/1440.0) *
+                    (802.0 * (Bface(TE::F1, 0, k, j, i + 1) + Bface(TE::F1, 0, k, j, i)) -
+                    (93.0 * (Bface(TE::F1, 0, k, j, i + 2) + Bface(TE::F1, 0, k, j, i - 1))) +
+                    (11.0 * (Bface(TE::F1, 0, k, j, i + 3) + Bface(TE::F1, 0, k, j, i - 2))));
+                if (ndim > 1) {
+                    b2_ct =
+                        (1.0/1440.0) *
+                        (802.0 * (Bface(TE::F2, 0, k, j + 1, i) + Bface(TE::F2, 0, k, j, i)) -
+                        (93.0 * (Bface(TE::F2, 0, k, j + 2, i) + Bface(TE::F2, 0, k, j - 1, i))) +
+                        (11.0 * (Bface(TE::F2, 0, k, j + 3, i) + Bface(TE::F2, 0, k, j - 2, i))));
+                }
+                if (ndim > 2) {
+                    b3_ct =
+                        (1.0/1440.0) *
+                        (802.0 * (Bface(TE::F3, 0, k + 1, j, i) + Bface(TE::F3, 0, k, j, i)) -
+                        (93.0 * (Bface(TE::F3, 0, k + 2, j, i) + Bface(TE::F3, 0, k - 1, j, i))) +
+                        (11.0 * (Bface(TE::F3, 0, k + 3, j, i) + Bface(TE::F3, 0, k - 2, j, i))));
+                }
+            } else if (convergence_order == 8){ // Teissier et al. Eq. (23)
+                b1_ct =
+                    (1.0/120960.0) *
+                    (68323.0 * (Bface(TE::F1, 0, k, j, i + 1) + Bface(TE::F1, 0, k, j, i)) -
+                    (9531.0 * (Bface(TE::F1, 0, k, j, i + 2) + Bface(TE::F1, 0, k, j, i - 1))) +
+                    (1879.0 * (Bface(TE::F1, 0, k, j, i + 3) + Bface(TE::F1, 0, k, j, i - 2))) -
+                    (191.0 * (Bface(TE::F1, 0, k, j, i + 4) + Bface(TE::F1, 0, k, j, i - 3))));
+                if (ndim > 1) {
+                    b2_ct =
+                        (1.0/120960.0) *
+                        (68323.0 * (Bface(TE::F2, 0, k, j + 1, i) + Bface(TE::F2, 0, k, j, i)) -
+                        (9531.0 * (Bface(TE::F2, 0, k, j + 2, i) + Bface(TE::F2, 0, k, j - 1, i))) +
+                        (1879.0 * (Bface(TE::F2, 0, k, j + 3, i) + Bface(TE::F2, 0, k, j - 2, i))) -
+                        (191.0 * (Bface(TE::F2, 0, k, j + 4, i) + Bface(TE::F2, 0, k, j - 3, i))));
+                }
+                if (ndim > 2) {
+                    b3_ct =
+                        (1.0/120960.0) *
+                        (68323.0 * (Bface(TE::F3, 0, k + 1, j, i) + Bface(TE::F3, 0, k, j, i)) -
+                        (9531.0 * (Bface(TE::F3, 0, k + 2, j, i) + Bface(TE::F3, 0, k - 1, j, i))) +
+                        (1879.0 * (Bface(TE::F3, 0, k + 3, j, i) + Bface(TE::F3, 0, k - 2, j, i))) -
+                        (191.0 * (Bface(TE::F3, 0, k + 4, j, i) + Bface(TE::F3, 0, k - 3, j, i))));
                 }
             }
 

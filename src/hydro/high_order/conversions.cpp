@@ -11,6 +11,7 @@
 #include "../../eos/adiabatic_ctmhd.hpp"
 #include "../../main.hpp"
 #include "conversions.hpp"
+#include "teissier_transforms.hpp"
 #include "../../recon/plm_simple.hpp"
 #include "../../recon/weno3_simple.hpp"
 #include "../../recon/weno5_classic.hpp"
@@ -25,10 +26,11 @@ namespace Hydro::HIGHORDER {
 
 
 // Convert the point-valued numerical flux at each face center into the
-// corresponding fourth-order area average (Teissier et al. 2024, eq. 46).
+// corresponding face average (Teissier et al. 2024, eqs. 46 and 47).
 // The input and output are deliberately separate because the transverse
 // stencil cannot be evaluated safely in place.
-TaskStatus PointToAreaAverage(MeshData<Real> *md) {
+template <int ORDER>
+TaskStatus PointToAreaAverageImpl(MeshData<Real> *md) {
   auto pmb = md->GetBlockData(0)->GetBlockPointer();
   const int ndim = pmb->pmy_mesh->ndim;
   const auto pkg = pmb->packages.Get("Hydro");
@@ -54,18 +56,8 @@ TaskStatus PointToAreaAverage(MeshData<Real> *md) {
                     const int n) {
         auto &cons = cons_pack(b);
         const auto &point_flux = consflux_point_pack(b);
-        const Real center = point_flux(TE::F1, n, k, j, i);
-        const Real d2y =
-            (ndim > 1)
-                ? point_flux(TE::F1, n, k, j - 1, i) - 2.0 * center +
-                      point_flux(TE::F1, n, k, j + 1, i)
-                : 0.0;
-        const Real d2z =
-            (ndim > 2)
-                ? point_flux(TE::F1, n, k - 1, j, i) - 2.0 * center +
-                      point_flux(TE::F1, n, k + 1, j, i)
-                : 0.0;
-        cons.flux(X1DIR, n, k, j, i) = center + (d2y + d2z) / 24.0;
+        cons.flux(X1DIR, n, k, j, i) =
+            PointToFaceAverage<ORDER, X1DIR>(point_flux, ndim, n, k, j, i);
       });
 
   if (ndim > 1) {
@@ -77,16 +69,8 @@ TaskStatus PointToAreaAverage(MeshData<Real> *md) {
                       const int n) {
           auto &cons = cons_pack(b);
           const auto &point_flux = consflux_point_pack(b);
-          const Real center = point_flux(TE::F2, n, k, j, i);
-          const Real d2x = point_flux(TE::F2, n, k, j, i - 1) -
-                           2.0 * center +
-                           point_flux(TE::F2, n, k, j, i + 1);
-          const Real d2z =
-              (ndim > 2)
-                  ? point_flux(TE::F2, n, k - 1, j, i) - 2.0 * center +
-                        point_flux(TE::F2, n, k + 1, j, i)
-                  : 0.0;
-          cons.flux(X2DIR, n, k, j, i) = center + (d2x + d2z) / 24.0;
+          cons.flux(X2DIR, n, k, j, i) =
+              PointToFaceAverage<ORDER, X2DIR>(point_flux, ndim, n, k, j, i);
         });
   }
 
@@ -99,21 +83,25 @@ TaskStatus PointToAreaAverage(MeshData<Real> *md) {
                       const int n) {
           auto &cons = cons_pack(b);
           const auto &point_flux = consflux_point_pack(b);
-          const Real center = point_flux(TE::F3, n, k, j, i);
-          const Real d2x = point_flux(TE::F3, n, k, j, i - 1) -
-                           2.0 * center +
-                           point_flux(TE::F3, n, k, j, i + 1);
-          const Real d2y = point_flux(TE::F3, n, k, j - 1, i) -
-                           2.0 * center +
-                           point_flux(TE::F3, n, k, j + 1, i);
-          cons.flux(X3DIR, n, k, j, i) = center + (d2x + d2y) / 24.0;
+          cons.flux(X3DIR, n, k, j, i) =
+              PointToFaceAverage<ORDER, X3DIR>(point_flux, ndim, n, k, j, i);
         });
   }
 
   return TaskStatus::complete;
 }
 
-TaskStatus PointElectricFieldsToAreaAverage(MeshData<Real> *md) {
+TaskStatus PointToAreaAverage(MeshData<Real> *md) {
+  const auto pkg = md->GetBlockData(0)->GetBlockPointer()->packages.Get("Hydro");
+  const int order = pkg->Param<int>("convergence_order");
+  if (order == 4) return PointToAreaAverageImpl<4>(md);
+  if (order == 6) return PointToAreaAverageImpl<6>(md);
+  if (order == 8) return PointToAreaAverageImpl<8>(md);
+  PARTHENON_FAIL("Unsupported Teissier point-flux-to-face-average order");
+}
+
+template <int ORDER>
+TaskStatus PointElectricFieldsToAreaAverageImpl(MeshData<Real> *md) {
   auto pmb = md->GetBlockData(0)->GetBlockPointer();
   const int ndim = pmb->pmy_mesh->ndim;
   const int nvars = 4;
@@ -131,7 +119,7 @@ TaskStatus PointElectricFieldsToAreaAverage(MeshData<Real> *md) {
       md->GetBlockData(0)->GetBoundsK(IndexDomain::interior);
 
   parthenon::par_for(
-      DEFAULT_LOOP_PATTERN, "Teissier X1 point flux to area average",
+      DEFAULT_LOOP_PATTERN, "Teissier X1 point EMF to area average",
       parthenon::DevExecSpace(), 0,
       teissier_eface_avg_pack.GetDim(5) - 1, kb.s, kb.e,
       jb.s, jb.e, ib.s, ib.e + 1, 0, nvars - 1,
@@ -140,23 +128,13 @@ TaskStatus PointElectricFieldsToAreaAverage(MeshData<Real> *md) {
         auto &eface_avg = teissier_eface_avg_pack(b);
         const auto &eface_point = teissier_eface_point_pack(b);
 
-        const Real center = eface_point(TE::F1, n, k, j, i);
-        const Real d2y =
-            (ndim > 1)
-                ? eface_point(TE::F1, n, k, j - 1, i) - 2.0 * center +
-                      eface_point(TE::F1, n, k, j + 1, i)
-                : 0.0;
-        const Real d2z =
-            (ndim > 2)
-                ? eface_point(TE::F1, n, k - 1, j, i) - 2.0 * center +
-                      eface_point(TE::F1, n, k + 1, j, i)
-                : 0.0;
-        eface_avg(TE::F1, n, k, j, i) = center + (d2y + d2z) / 24.0;
+        eface_avg(TE::F1, n, k, j, i) =
+            PointToFaceAverage<ORDER, X1DIR>(eface_point, ndim, n, k, j, i);
       });
 
   if (ndim > 1) {
     parthenon::par_for(
-        DEFAULT_LOOP_PATTERN, "Teissier X2 point flux to area average",
+        DEFAULT_LOOP_PATTERN, "Teissier X2 point EMF to area average",
         parthenon::DevExecSpace(), 0,
         teissier_eface_avg_pack.GetDim(5) - 1, kb.s, kb.e,
         jb.s, jb.e + 1, ib.s, ib.e, 0, nvars - 1,
@@ -165,22 +143,14 @@ TaskStatus PointElectricFieldsToAreaAverage(MeshData<Real> *md) {
           auto &eface_avg = teissier_eface_avg_pack(b);
           const auto &eface_point = teissier_eface_point_pack(b);
 
-          const Real center = eface_point(TE::F2, n, k, j, i);
-          const Real d2x = eface_point(TE::F2, n, k, j, i - 1) -
-                           2.0 * center +
-                           eface_point(TE::F2, n, k, j, i + 1);
-          const Real d2z =
-              (ndim > 2)
-                  ? eface_point(TE::F2, n, k - 1, j, i) - 2.0 * center +
-                        eface_point(TE::F2, n, k + 1, j, i)
-                  : 0.0;
-          eface_avg(TE::F2, n, k, j, i) = center + (d2x + d2z) / 24.0;
+          eface_avg(TE::F2, n, k, j, i) =
+              PointToFaceAverage<ORDER, X2DIR>(eface_point, ndim, n, k, j, i);
         });
   }
 
   if (ndim > 2) {
     parthenon::par_for(
-        DEFAULT_LOOP_PATTERN, "Teissier X3 point flux to area average",
+        DEFAULT_LOOP_PATTERN, "Teissier X3 point EMF to area average",
         parthenon::DevExecSpace(), 0,
         teissier_eface_avg_pack.GetDim(5) - 1, kb.s,
         kb.e + 1, jb.s, jb.e, ib.s, ib.e, 0, nvars - 1,
@@ -188,18 +158,96 @@ TaskStatus PointElectricFieldsToAreaAverage(MeshData<Real> *md) {
                       const int n) {
           auto &eface_avg = teissier_eface_avg_pack(b);
           const auto &eface_point = teissier_eface_point_pack(b);
-          const Real center = eface_point(TE::F3, n, k, j, i);
-          const Real d2x = eface_point(TE::F3, n, k, j, i - 1) -
-                           2.0 * center +
-                           eface_point(TE::F3, n, k, j, i + 1);
-          const Real d2y = eface_point(TE::F3, n, k, j - 1, i) -
-                           2.0 * center +
-                           eface_point(TE::F3, n, k, j + 1, i);
-          eface_avg(TE::F3, n, k, j, i) = center + (d2x + d2y) / 24.0;
+          eface_avg(TE::F3, n, k, j, i) =
+              PointToFaceAverage<ORDER, X3DIR>(eface_point, ndim, n, k, j, i);
         });
   }
 
   return TaskStatus::complete;
+}
+
+TaskStatus PointElectricFieldsToAreaAverage(MeshData<Real> *md) {
+  const auto pkg = md->GetBlockData(0)->GetBlockPointer()->packages.Get("Hydro");
+  const int order = pkg->Param<int>("convergence_order");
+  if (order == 4) return PointElectricFieldsToAreaAverageImpl<4>(md);
+  if (order == 6) return PointElectricFieldsToAreaAverageImpl<6>(md);
+  if (order == 8) return PointElectricFieldsToAreaAverageImpl<8>(md);
+  PARTHENON_FAIL("Unsupported Teissier electric-field-to-face-average order");
+}
+
+template <int ORDER>
+TaskStatus PointHLLDProductsToAreaAverageImpl(MeshData<Real> *md) {
+  auto pmb = md->GetBlockData(0)->GetBlockPointer();
+  const int ndim = pmb->pmy_mesh->ndim;
+  const int nvars = 2;
+
+  auto teissier_hlld_vbartB_point_pack =
+      md->PackVariables(std::vector<std::string>{"teissier_hlld_vbartB_point"});
+  auto teissier_hlld_vbartB_avg_pack =
+      md->PackVariables(std::vector<std::string>{"teissier_hlld_vbartB_avg"});
+
+  const IndexRange ib =
+      md->GetBlockData(0)->GetBoundsI(IndexDomain::interior);
+  const IndexRange jb =
+      md->GetBlockData(0)->GetBoundsJ(IndexDomain::interior);
+  const IndexRange kb =
+      md->GetBlockData(0)->GetBoundsK(IndexDomain::interior);
+
+  parthenon::par_for(
+      DEFAULT_LOOP_PATTERN, "Teissier X1 point HLLD products to area average",
+      parthenon::DevExecSpace(), 0,
+      teissier_hlld_vbartB_avg_pack.GetDim(5) - 1, kb.s, kb.e,
+      jb.s, jb.e, ib.s, ib.e + 1, 0, nvars - 1,
+      KOKKOS_LAMBDA(const int b, const int k, const int j, const int i,
+                    const int n) {
+        auto &vbartB_avg = teissier_hlld_vbartB_avg_pack(b);
+        const auto &vbartB_point = teissier_hlld_vbartB_point_pack(b);
+
+        vbartB_avg(TE::F1, n, k, j, i) =
+            PointToFaceAverage<ORDER, X1DIR>(vbartB_point, ndim, n, k, j, i);
+      });
+
+  if (ndim > 1) {
+    parthenon::par_for(
+        DEFAULT_LOOP_PATTERN, "Teissier X2 point HLLD products to area average",
+        parthenon::DevExecSpace(), 0,
+        teissier_hlld_vbartB_avg_pack.GetDim(5) - 1, kb.s, kb.e,
+        jb.s, jb.e + 1, ib.s, ib.e, 0, nvars - 1,
+        KOKKOS_LAMBDA(const int b, const int k, const int j, const int i,
+                      const int n) {
+          auto &vbartB_avg = teissier_hlld_vbartB_avg_pack(b);
+          const auto &vbartB_point = teissier_hlld_vbartB_point_pack(b);
+
+          vbartB_avg(TE::F2, n, k, j, i) =
+              PointToFaceAverage<ORDER, X2DIR>(vbartB_point, ndim, n, k, j, i);
+        });
+  }
+
+  if (ndim > 2) {
+    parthenon::par_for(
+        DEFAULT_LOOP_PATTERN, "Teissier X3 point HLLD products to area average",
+        parthenon::DevExecSpace(), 0,
+        teissier_hlld_vbartB_avg_pack.GetDim(5) - 1, kb.s,
+        kb.e + 1, jb.s, jb.e, ib.s, ib.e, 0, nvars - 1,
+        KOKKOS_LAMBDA(const int b, const int k, const int j, const int i,
+                      const int n) {
+          auto &vbartB_avg = teissier_hlld_vbartB_avg_pack(b);
+          const auto &vbartB_point = teissier_hlld_vbartB_point_pack(b);
+          vbartB_avg(TE::F3, n, k, j, i) =
+              PointToFaceAverage<ORDER, X3DIR>(vbartB_point, ndim, n, k, j, i);
+        });
+  }
+
+  return TaskStatus::complete;
+}
+
+TaskStatus PointHLLDProductsToAreaAverage(MeshData<Real> *md) {
+  const auto pkg = md->GetBlockData(0)->GetBlockPointer()->packages.Get("Hydro");
+  const int order = pkg->Param<int>("convergence_order");
+  if (order == 4) return PointHLLDProductsToAreaAverageImpl<4>(md);
+  if (order == 6) return PointHLLDProductsToAreaAverageImpl<6>(md);
+  if (order == 8) return PointHLLDProductsToAreaAverageImpl<8>(md);
+  PARTHENON_FAIL("Unsupported Teissier HLLD-product-to-face-average order");
 }
 
 // Convert point-valued edge EMFs into the line averages evolved by CT. In
