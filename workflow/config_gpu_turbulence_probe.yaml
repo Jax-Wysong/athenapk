@@ -7,8 +7,8 @@ athenapk: build-gpu-v100/bin/athenaPK
 athenapk_mpi: build-gpu-v100/bin/athenaPK
 athenapk_mpi_hdf5: build-gpu-v100/bin/athenaPK
 
-results_root: /mnt/gs21/scratch/wysongj2/athenapk-fourth-order-Teissier24/gpu-runs
-scheme_id: turbulence_gpu_probe
+results_root: /mnt/gs21/scratch/wysongj2/athenapk-fourth-order-Teissier24/gpu-runs-performance
+scheme_id: turbulence_gpu_probe_N128_hlld_line_orders_4_6_8_t3
 
 execution:
   envmodules:
@@ -40,19 +40,49 @@ tests:
     mpi_tasks: 1
     mem_mb_per_cpu: 16000
     launcher: direct
-    enabled_cases: [uct4_llf_line]
+    enabled_cases:
+      - uct4_hlld_line
+      - uct6_hlld_line
+      - uct8_hlld_line
+
     cases:
-      uct4_llf_line:
-        label: UCT-LLF Teissier4
+      uct4_hlld_line:
+        label: UCT-HLLD Teissier4 Line
         fluid: ucthlldmhd
-        riemann: llf
+        riemann: hlld
         reconstruction: weno5js
         integrator: rk4
         convergence_order: 4
         first_order_flux_correct: false
         nghost: 3
         hydro_options:
-          uct_solver: llf_line
+          uct_solver: hlld_line
+          scratch_level: 1
+
+      uct6_hlld_line:
+        label: UCT-HLLD Teissier6 Line
+        fluid: ucthlldmhd
+        riemann: hlld
+        reconstruction: weno7js
+        integrator: rk4
+        convergence_order: 6
+        first_order_flux_correct: false
+        nghost: 4
+        hydro_options:
+          uct_solver: hlld_line
+          scratch_level: 1
+
+      uct8_hlld_line:
+        label: UCT-HLLD Teissier8 Line
+        fluid: ucthlldmhd
+        riemann: hlld
+        reconstruction: weno9js
+        integrator: rk4
+        convergence_order: 8
+        first_order_flux_correct: false
+        nghost: 6
+        hydro_options:
+          uct_solver: hlld_line
           scratch_level: 1
     spectra:
       enabled: false

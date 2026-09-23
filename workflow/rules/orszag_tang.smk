@@ -13,6 +13,10 @@ ORSZAG_TANG_DIAGNOSTIC_MEM_MB = int(
 ORSZAG_TANG_DIAGNOSTIC_RUNTIME = int(
     ORSZAG_TANG.get("diagnostic_runtime", 60)
 )
+ORSZAG_TANG_CFL = float(ORSZAG_TANG.get("cfl", 0.3))
+ORSZAG_TANG_TLIM = float(ORSZAG_TANG.get("tlim", 1.0))
+ORSZAG_TANG_OUTPUT_DT = float(ORSZAG_TANG.get("output_dt", 0.01))
+ORSZAG_TANG_LAUNCHER_MODE = ORSZAG_TANG.get("launcher", "srun")
 
 if len(ORSZAG_TANG_RESOLUTION) != 2 or len(ORSZAG_TANG_MB) != 2:
     raise ValueError("orszag_tang resolution and meshblock must have two entries")
@@ -38,6 +42,16 @@ if ORSZAG_TANG_DIAGNOSTIC_MEM_MB <= 0:
     raise ValueError("orszag_tang diagnostic_mem_mb must be positive")
 if ORSZAG_TANG_DIAGNOSTIC_RUNTIME <= 0:
     raise ValueError("orszag_tang diagnostic_runtime must be positive")
+if ORSZAG_TANG_CFL <= 0.0:
+    raise ValueError("orszag_tang cfl must be positive")
+if ORSZAG_TANG_TLIM <= 0.0:
+    raise ValueError("orszag_tang tlim must be positive")
+if ORSZAG_TANG_OUTPUT_DT <= 0.0:
+    raise ValueError("orszag_tang output_dt must be positive")
+if ORSZAG_TANG_LAUNCHER_MODE not in ("direct", "srun"):
+    raise ValueError("orszag_tang launcher must be 'direct' or 'srun'")
+if ORSZAG_TANG["enabled"] and config["dimension"] != "2D":
+    raise ValueError("orszag_tang is a two-dimensional test")
 
 ORSZAG_TANG_NUM_BLOCKS = (
     (int(ORSZAG_TANG_RESOLUTION[0]) // int(ORSZAG_TANG_MB[0]))
@@ -46,8 +60,14 @@ ORSZAG_TANG_NUM_BLOCKS = (
 ORSZAG_TANG_MPI_TASKS = min(
     ORSZAG_TANG_REQUESTED_MPI_TASKS, ORSZAG_TANG_NUM_BLOCKS
 )
-ORSZAG_TANG_MPI_RESOURCE = "srun" if ORSZAG_TANG_MPI_TASKS > 1 else False
-ORSZAG_TANG_LAUNCHER = f"srun -n {ORSZAG_TANG_MPI_TASKS}"
+if ORSZAG_TANG_LAUNCHER_MODE == "direct":
+    if ORSZAG_TANG_MPI_TASKS != 1:
+        raise ValueError("orszag_tang launcher=direct requires mpi_tasks=1")
+    ORSZAG_TANG_MPI_RESOURCE = False
+    ORSZAG_TANG_LAUNCHER = ""
+else:
+    ORSZAG_TANG_MPI_RESOURCE = "srun" if ORSZAG_TANG_MPI_TASKS > 1 else False
+    ORSZAG_TANG_LAUNCHER = f"srun -n {ORSZAG_TANG_MPI_TASKS}"
 
 
 def orszag_tang_out(fluid):
@@ -86,6 +106,9 @@ rule run_orszag_tang:
         nx1_mb=ORSZAG_TANG_MB[0],
         nx2_mb=ORSZAG_TANG_MB[1],
         launcher=ORSZAG_TANG_LAUNCHER,
+        cfl=ORSZAG_TANG_CFL,
+        tlim=ORSZAG_TANG_TLIM,
+        output_dt=ORSZAG_TANG_OUTPUT_DT,
     resources:
         runtime=ORSZAG_TANG_RUNTIME,
         nodes=ORSZAG_TANG_NODES,
@@ -111,12 +134,12 @@ rule run_orszag_tang:
           parthenon/mesh/nx1={params.nx1} \
           parthenon/mesh/nx2={params.nx2} \
           parthenon/mesh/nx3=1 \
-          parthenon/mesh/nghost=3 \
+          parthenon/mesh/nghost={NGHOST} \
           parthenon/meshblock/nx1={params.nx1_mb} \
           parthenon/meshblock/nx2={params.nx2_mb} \
           parthenon/meshblock/nx3=1 \
-          parthenon/time/tlim=1.0 \
-          parthenon/time/cfl=0.3 \
+          parthenon/time/tlim={params.tlim} \
+          parthenon/time/cfl={params.cfl} \
           parthenon/time/integrator={config[integrator]} \
           hydro/fluid={wildcards.fluid} \
           hydro/riemann={config[riemann]} \
@@ -127,7 +150,7 @@ rule run_orszag_tang:
           hydro/scratch_level=1 \
           hydro/pfloor=1e-15 \
           parthenon/output0/file_type=hdf5 \
-          parthenon/output0/dt=0.01 \
+          parthenon/output0/dt={params.output_dt} \
           parthenon/output0/variables={ORSZAG_TANG_OUTPUT_VARIABLES} \
           > {log.out} 2> {log.err}
     

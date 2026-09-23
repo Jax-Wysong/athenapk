@@ -3,7 +3,35 @@ CURRENT_SHEET_RESOLUTION = CURRENT_SHEET["resolution"]
 CURRENT_SHEET_MB = CURRENT_SHEET["meshblock"]
 CURRENT_SHEET_HYDRO_OPTIONS = hydro_cli_options(CURRENT_SHEET)
 CURRENT_SHEET_OUTPUT_VARIABLES = output_variable_list(CURRENT_SHEET)
-CURRENT_SHEET_FLUIDS = CURRENT_SHEET.get("fluids", config["fluids"])
+CURRENT_SHEET_FLUIDS = (
+    config["fluids"]
+    if ENABLED_TESTS is not None
+    else CURRENT_SHEET.get("fluids", config["fluids"])
+)
+CURRENT_SHEET_CFL = float(CURRENT_SHEET.get("cfl", 0.3))
+CURRENT_SHEET_TLIM = float(CURRENT_SHEET.get("tlim", 10.0))
+CURRENT_SHEET_OUTPUT_DT = float(CURRENT_SHEET.get("output_dt", 0.05))
+
+if len(CURRENT_SHEET_RESOLUTION) != 2 or len(CURRENT_SHEET_MB) != 2:
+    raise ValueError("current_sheet resolution and meshblock must have two entries")
+if any(int(n) <= 0 for n in CURRENT_SHEET_RESOLUTION + CURRENT_SHEET_MB):
+    raise ValueError("current_sheet resolution and meshblock entries must be positive")
+if any(
+    int(global_n) % int(block_n) != 0
+    for global_n, block_n in zip(CURRENT_SHEET_RESOLUTION, CURRENT_SHEET_MB)
+):
+    raise ValueError(
+        f"current_sheet grid {CURRENT_SHEET_RESOLUTION} is not divisible by "
+        f"meshblock {CURRENT_SHEET_MB}"
+    )
+if CURRENT_SHEET_CFL <= 0.0:
+    raise ValueError("current_sheet cfl must be positive")
+if CURRENT_SHEET_TLIM <= 0.0:
+    raise ValueError("current_sheet tlim must be positive")
+if CURRENT_SHEET_OUTPUT_DT <= 0.0:
+    raise ValueError("current_sheet output_dt must be positive")
+if CURRENT_SHEET["enabled"] and config["dimension"] != "2D":
+    raise ValueError("current_sheet is a two-dimensional test")
 
 def current_sheet_out(fluid):
     return f"{config['results_root']}/{config['dimension']}/{fluid}/{CURRENT_SHEET['dirname']}"
@@ -22,6 +50,9 @@ if CURRENT_SHEET["enabled"]:
     )
 
 rule run_current_sheet:
+    input:
+        exe=config["athenapk"],
+        deck=CURRENT_SHEET["input"]
     output:
         done=f"{config['results_root']}/{config['dimension']}/{{fluid}}/{CURRENT_SHEET['dirname']}/phdf-files/run.done"
     log:
@@ -37,6 +68,9 @@ rule run_current_sheet:
         nx2=CURRENT_SHEET_RESOLUTION[1],
         nx1_mb=CURRENT_SHEET_MB[0],
         nx2_mb=CURRENT_SHEET_MB[1],
+        cfl=CURRENT_SHEET_CFL,
+        tlim=CURRENT_SHEET_TLIM,
+        output_dt=CURRENT_SHEET_OUTPUT_DT,
     resources:
         runtime=240,
         mem_mb=16000,
@@ -66,7 +100,7 @@ rule run_current_sheet:
         rm -f {output.done}
         cd {params.rundir}
 
-        {config[athenapk]} -i {CURRENT_SHEET[input]} \
+        {input.exe} -i {input.deck} \
           parthenon/job/problem_id={params.problem_id} \
           parthenon/mesh/nx1={params.nx1} \
           parthenon/mesh/nx2={params.nx2} \
@@ -74,9 +108,9 @@ rule run_current_sheet:
           parthenon/meshblock/nx1={params.nx1_mb} \
           parthenon/meshblock/nx2={params.nx2_mb} \
           parthenon/meshblock/nx3=1 \
-          parthenon/mesh/nghost=3 \
-          parthenon/time/tlim=10.0 \
-          parthenon/time/cfl=0.3 \
+          parthenon/mesh/nghost={NGHOST} \
+          parthenon/time/tlim={params.tlim} \
+          parthenon/time/cfl={params.cfl} \
           parthenon/time/integrator={config[integrator]} \
           hydro/fluid={wildcards.fluid} \
           hydro/riemann={config[riemann]} \
@@ -87,7 +121,7 @@ rule run_current_sheet:
           hydro/scratch_level=1 \
           hydro/pfloor=1e-15 \
           parthenon/output0/file_type=hdf5 \
-          parthenon/output0/dt=0.05 \
+          parthenon/output0/dt={params.output_dt} \
           parthenon/output0/variables={CURRENT_SHEET_OUTPUT_VARIABLES} \
           > {log.out} 2> {log.err}
     

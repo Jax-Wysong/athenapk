@@ -144,9 +144,9 @@ axes[1].set_ylabel(r"$\langle E_{\mathrm{mag}}\rangle$")
 for axis in axes:
     axis.set_xlabel("Time")
     axis.grid(alpha=0.25)
-    axis.legend()
     axis.set_xlim(left=0.0)
     axis.set_ylim(bottom=0.0)
+axes[0].legend()
 
 plot_output = Path(args.plot).expanduser()
 plot_output.parent.mkdir(parents=True, exist_ok=True)

@@ -4,14 +4,31 @@ SMOOTH_HYDRO_OPTIONS = hydro_cli_options(SMOOTH)
 SMOOTH_OUTPUT_VARIABLES = output_variable_list(SMOOTH)
 SMOOTH_REQUESTED_MPI_TASKS = int(SMOOTH.get("mpi_tasks", 4))
 SMOOTH_MEM_MB_PER_CPU = int(SMOOTH.get("mem_mb_per_cpu", 4000))
+SMOOTH_LAUNCHER_MODE = SMOOTH.get("launcher", "srun")
+SMOOTH_CFL = float(SMOOTH.get("cfl", 0.3))
+SMOOTH_TLIM = float(SMOOTH.get("tlim", 10.0))
 SMOOTH_MPI_TASKS = min(SMOOTH_REQUESTED_MPI_TASKS, 4)
-SMOOTH_MPI_RESOURCE = "srun" if SMOOTH_MPI_TASKS > 1 else False
-SMOOTH_LAUNCHER = f"srun -n {SMOOTH_MPI_TASKS}"
+SMOOTH_MPI_RESOURCE = (
+    "srun"
+    if SMOOTH_LAUNCHER_MODE == "srun" and SMOOTH_MPI_TASKS > 1
+    else False
+)
+SMOOTH_LAUNCHER = (
+    "" if SMOOTH_LAUNCHER_MODE == "direct" else f"srun -n {SMOOTH_MPI_TASKS}"
+)
 
 if SMOOTH_REQUESTED_MPI_TASKS < 1:
     raise ValueError("smooth_vortex mpi_tasks must be positive")
 if SMOOTH_MEM_MB_PER_CPU < 1:
     raise ValueError("smooth_vortex mem_mb_per_cpu must be positive")
+if SMOOTH_CFL <= 0.0:
+    raise ValueError("smooth_vortex cfl must be positive")
+if SMOOTH_TLIM <= 0.0:
+    raise ValueError("smooth_vortex tlim must be positive")
+if SMOOTH_LAUNCHER_MODE not in ("direct", "srun"):
+    raise ValueError("smooth_vortex launcher must be 'direct' or 'srun'")
+if SMOOTH_LAUNCHER_MODE == "direct" and SMOOTH_REQUESTED_MPI_TASKS != 1:
+    raise ValueError("smooth_vortex launcher=direct requires mpi_tasks=1")
 
 def smooth_vortex_out(fluid):
     return f"{config['results_root']}/{config['dimension']}/{fluid}/{SMOOTH['dirname']}"
@@ -37,6 +54,8 @@ rule run_smooth_vortex:
         problem_id=lambda wildcards: f"smooth_mhd_vortex_{wildcards.fluid}_N{wildcards.N}",
         nx1_mb=lambda wildcards: (int(wildcards.N) // 2),
         nx2_mb=lambda wildcards: (int(wildcards.N) // 2),
+        cfl=SMOOTH_CFL,
+        tlim=SMOOTH_TLIM,
         launcher=SMOOTH_LAUNCHER
     resources:
         runtime=240,
@@ -65,12 +84,12 @@ rule run_smooth_vortex:
           parthenon/mesh/nx1={wildcards.N} \
           parthenon/mesh/nx2={wildcards.N} \
           parthenon/mesh/nx3=1 \
-          parthenon/mesh/nghost=3 \
+          parthenon/mesh/nghost={NGHOST} \
           parthenon/meshblock/nx1={params.nx1_mb} \
           parthenon/meshblock/nx2={params.nx2_mb} \
           parthenon/meshblock/nx3=1 \
-          parthenon/time/tlim=10.0 \
-          parthenon/time/cfl=0.3 \
+          parthenon/time/tlim={params.tlim} \
+          parthenon/time/cfl={params.cfl} \
           parthenon/time/integrator={config[integrator]} \
           hydro/fluid={wildcards.fluid} \
           hydro/riemann={config[riemann]} \

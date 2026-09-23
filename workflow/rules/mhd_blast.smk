@@ -22,16 +22,28 @@ MHD_BLAST_MB = MHD_BLAST["meshblock"]
 MHD_BLAST_FLUIDS = MHD_BLAST.get("fluids", config["fluids"])
 MHD_BLAST_HYDRO_OPTIONS = hydro_cli_options(MHD_BLAST)
 MHD_BLAST_OUTPUT_VARIABLES = output_variable_list(MHD_BLAST)
+MHD_BLAST_CFL = float(MHD_BLAST.get("cfl", 0.3))
 if len(MHD_BLAST_RESOLUTION) != 3 or len(MHD_BLAST_MB) != 3:
     raise ValueError("mhd_blast resolution and meshblock must have three entries")
+if MHD_BLAST_CFL <= 0.0:
+    raise ValueError("mhd_blast cfl must be positive")
 MHD_BLAST_NUM_BLOCKS = (
     ((MHD_BLAST_RESOLUTION[0] + MHD_BLAST_MB[0] - 1) // MHD_BLAST_MB[0])
     * ((MHD_BLAST_RESOLUTION[1] + MHD_BLAST_MB[1] - 1) // MHD_BLAST_MB[1])
     * ((MHD_BLAST_RESOLUTION[2] + MHD_BLAST_MB[2] - 1) // MHD_BLAST_MB[2])
 )
 MHD_BLAST_MPI_TASKS = min(MHD_BLAST["mpi_tasks"], MHD_BLAST_NUM_BLOCKS)
-MHD_BLAST_MPI_RESOURCE = "srun" if MHD_BLAST_MPI_TASKS > 1 else False
-MHD_BLAST_LAUNCHER = f"srun -n {MHD_BLAST_MPI_TASKS}"
+MHD_BLAST_LAUNCHER_MODE = MHD_BLAST.get("launcher", "srun")
+if MHD_BLAST_LAUNCHER_MODE not in ("direct", "srun"):
+    raise ValueError("mhd_blast launcher must be 'direct' or 'srun'")
+if MHD_BLAST_LAUNCHER_MODE == "direct":
+    if MHD_BLAST_MPI_TASKS != 1:
+        raise ValueError("mhd_blast launcher=direct requires mpi_tasks=1")
+    MHD_BLAST_MPI_RESOURCE = False
+    MHD_BLAST_LAUNCHER = ""
+else:
+    MHD_BLAST_MPI_RESOURCE = "srun" if MHD_BLAST_MPI_TASKS > 1 else False
+    MHD_BLAST_LAUNCHER = f"srun -n {MHD_BLAST_MPI_TASKS}"
 
 if MHD_BLAST["enabled"] and config["dimension"] != "3D":
     raise ValueError("mhd_blast is a three-dimensional test")
@@ -95,6 +107,7 @@ rule run_mhd_blast:
         mb_nx3=MHD_BLAST_MB[2],
         tlim=MHD_BLAST["tlim"],
         output_dt=MHD_BLAST["output_dt"],
+        cfl=MHD_BLAST_CFL,
         launcher=MHD_BLAST_LAUNCHER
     resources:
         runtime=720,
@@ -125,9 +138,9 @@ rule run_mhd_blast:
           parthenon/meshblock/nx1={params.mb_nx1} \
           parthenon/meshblock/nx2={params.mb_nx2} \
           parthenon/meshblock/nx3={params.mb_nx3} \
-          parthenon/mesh/nghost=3 \
+          parthenon/mesh/nghost={NGHOST} \
           parthenon/time/tlim={params.tlim} \
-          parthenon/time/cfl=0.3 \
+          parthenon/time/cfl={params.cfl} \
           parthenon/time/integrator={config[integrator]} \
           hydro/fluid={wildcards.fluid} \
           hydro/riemann={config[riemann]} \

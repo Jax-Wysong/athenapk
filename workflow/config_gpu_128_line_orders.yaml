@@ -1,0 +1,169 @@
+# 128^3, single-V100-per-case turbulence comparison for the native
+# second-order routes and the fourth-, sixth-, and eighth-order Teissier line
+# routes. Results are kept separate from the earlier 128^3 production sweep.
+
+      # dump_ids: [150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 187, 188, 189, 190, 191, 192, 193, 194, 195, 196, 197, 198, 199, 200]
+
+
+plotting_python: /mnt/home/wysongj2/.conda/envs/mhd/bin/python
+gnuplot: /mnt/home/wysongj2/.conda/envs/mhd/bin/gnuplot
+athenapk: build-gpu-v100/bin/athenaPK
+athenapk_mpi: build-gpu-v100/bin/athenaPK
+athenapk_mpi_hdf5: build-gpu-v100/bin/athenaPK
+
+results_root: /mnt/gs21/scratch/wysongj2/athenapk-fourth-order-Teissier24/gpu-runs-performance-new
+scheme_id: turbulence_gpu_production_t100_line_orders_2_4_6_8
+
+execution:
+  envmodules:
+    - foss/2023a
+    - HDF5/1.14.0-gompi-2023a
+    - CUDA/12.3.0
+  gpus: 1
+  tasks_per_gpu: 1
+  cpus_per_gpu: 1
+  constraint: nvf
+  slurm_extra: "--gpu-bind=closest"
+
+dimension: 3D
+
+tests:
+  turbulence:
+    enabled: true
+    output_group: mhd_comparison
+    auto_restart: true
+    resolution: [128, 128, 128]
+    meshblock: [64, 64, 64]
+    tlim: 100.0
+    history_dt: 0.1
+    output_dt: 0.5
+    nodes: 1
+    tasks_per_node: 1
+    mpi_tasks: 1
+    mem_mb_per_cpu: 16000
+    enabled_cases:
+      - uct2_weno3js
+      - glm_weno3js
+      - uct4_hlld_line
+      - uct4_llf_line
+      - uct6_hlld_line
+      - uct6_llf_line
+      - uct8_hlld_line
+      - uct8_llf_line
+
+    cases:
+      uct2_weno3js:
+        label: UCT-HLLD 2nd
+        fluid: ucthlldmhd
+        riemann: hlld
+        reconstruction: weno3js
+        integrator: rk3
+        convergence_order: 2
+        first_order_flux_correct: false
+        nghost: 2
+        runtime: 239
+
+      glm_weno3js:
+        label: AthenaPK WENO3
+        fluid: glmmhd
+        riemann: hlld
+        reconstruction: weno3js
+        integrator: rk3
+        convergence_order: 2
+        first_order_flux_correct: false
+        nghost: 2
+        runtime: 239
+
+      uct4_hlld_line:
+        label: UCT-HLLD Teissier4 Line
+        fluid: ucthlldmhd
+        riemann: hlld
+        reconstruction: weno5js
+        integrator: rk4
+        convergence_order: 4
+        first_order_flux_correct: false
+        nghost: 3
+        runtime: 239
+        hydro_options:
+          uct_solver: hlld_line
+          scratch_level: 1
+
+      uct4_llf_line:
+        label: UCT-LLF Teissier4
+        fluid: ucthlldmhd
+        riemann: llf
+        reconstruction: weno5js
+        integrator: rk4
+        convergence_order: 4
+        first_order_flux_correct: false
+        nghost: 3
+        runtime: 239
+        hydro_options:
+          uct_solver: llf_line
+          scratch_level: 1
+
+      uct6_hlld_line:
+        label: UCT-HLLD Teissier6 Line
+        fluid: ucthlldmhd
+        riemann: hlld
+        reconstruction: weno7js
+        integrator: rk4
+        convergence_order: 6
+        first_order_flux_correct: false
+        nghost: 4
+        runtime: 239
+        hydro_options:
+          uct_solver: hlld_line
+          scratch_level: 1
+
+      uct6_llf_line:
+        label: UCT-LLF Teissier6
+        fluid: ucthlldmhd
+        riemann: llf
+        reconstruction: weno7js
+        integrator: rk4
+        convergence_order: 6
+        first_order_flux_correct: false
+        nghost: 4
+        runtime: 239
+        hydro_options:
+          uct_solver: llf_line
+          scratch_level: 1
+
+      uct8_hlld_line:
+        label: UCT-HLLD Teissier8 Line
+        fluid: ucthlldmhd
+        riemann: hlld
+        reconstruction: weno9js
+        integrator: rk4
+        convergence_order: 8
+        first_order_flux_correct: false
+        nghost: 6
+        runtime: 239
+        hydro_options:
+          uct_solver: hlld_line
+          scratch_level: 1
+
+      uct8_llf_line:
+        label: UCT-LLF Teissier8
+        fluid: ucthlldmhd
+        riemann: llf
+        reconstruction: weno9js
+        integrator: rk4
+        convergence_order: 8
+        first_order_flux_correct: false
+        nghost: 6
+        runtime: 239
+        hydro_options:
+          uct_solver: llf_line
+          scratch_level: 1
+
+    spectra:
+      enabled: true
+      dump_ids: [150, 153, 154, 155, 158, 159, 160, 163, 164, 165, 168, 169, 170, 173, 174, 175, 178, 179, 180, 183, 184, 185, 188, 189, 190, 193, 194, 195, 198, 199, 200]
+      analysis_nodes: 1
+      analysis_tasks: 8
+      mem_mb_per_cpu: 4000
+      runtime: 239
+      kernels: [Gauss]
+

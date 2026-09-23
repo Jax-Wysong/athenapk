@@ -3,6 +3,10 @@ FIELD_LOOP_MESH = FIELD_LOOP["mesh"][config["dimension"]]
 FIELD_LOOP_HYDRO_OPTIONS = hydro_cli_options(FIELD_LOOP)
 FIELD_LOOP_OUTPUT_VARIABLES = output_variable_list(FIELD_LOOP)
 FIELD_LOOP_PLANES = ["xy"] if config["dimension"] == "2D" else ["xy", "xz", "yz"]
+FIELD_LOOP_CFL = float(FIELD_LOOP.get("cfl", 0.3))
+
+if FIELD_LOOP_CFL <= 0.0:
+    raise ValueError("field_loop cfl must be positive")
 
 def field_loop_base_out(fluid):
     return f"{config['results_root']}/{config['dimension']}/{fluid}/{FIELD_LOOP['dirname']}"
@@ -36,7 +40,8 @@ rule run_field_loop:
         mb_nx1=FIELD_LOOP_MESH["mb_nx1"],
         mb_nx2=FIELD_LOOP_MESH["mb_nx2"],
         mb_nx3=FIELD_LOOP_MESH["mb_nx3"],
-        iprob=FIELD_LOOP_MESH["iprob"]
+        iprob=FIELD_LOOP_MESH["iprob"],
+        cfl=FIELD_LOOP_CFL
     resources:
         runtime=360,
         mem_mb=10000,
@@ -69,12 +74,12 @@ rule run_field_loop:
           parthenon/mesh/nx1={params.nx1} \
           parthenon/mesh/nx2={params.nx2} \
           parthenon/mesh/nx3={params.nx3} \
-          parthenon/mesh/nghost=3 \
+          parthenon/mesh/nghost={NGHOST} \
           parthenon/meshblock/nx1={params.mb_nx1} \
           parthenon/meshblock/nx2={params.mb_nx2} \
           parthenon/meshblock/nx3={params.mb_nx3} \
           parthenon/time/tlim=2.0 \
-          parthenon/time/cfl=0.3 \
+          parthenon/time/cfl={params.cfl} \
           parthenon/time/integrator={config[integrator]} \
           hydro/fluid={wildcards.fluid} \
           hydro/riemann={config[riemann]} \

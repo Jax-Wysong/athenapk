@@ -1,7 +1,6 @@
 """Plot matched final midplane slices for GLM and UCT-HLLD turbulence runs."""
 
 import argparse
-import math
 from pathlib import Path
 
 import matplotlib.colors as colors
@@ -127,17 +126,48 @@ def render_comparison(field, output, title, colorbar_label, cmap, logarithmic):
     lower, upper = common_limits(list(arrays.values()), logarithmic)
     norm = colors.LogNorm(lower, upper) if logarithmic else colors.Normalize(lower, upper)
 
-    ncols = min(2, len(cases))
-    nrows = math.ceil(len(cases) / ncols)
-    figure, axes = plt.subplots(
-        nrows,
-        ncols,
-        figsize=(5.5 * ncols, 5.0 * nrows),
-        constrained_layout=True,
-        squeeze=False,
-    )
+    # The configured comparison lists its three second-order methods first and
+    # its fourth-order methods second. Arrange the second-order cases in the
+    # left two columns and the fourth-order cases in the right two columns.
+    order_split = min(3, len(cases))
+    has_order_split = order_split < len(cases)
+    figure = plt.figure(constrained_layout=True)
+    if has_order_split:
+        if len(cases) - order_split > 4:
+            raise RuntimeError(
+                "Grouped slice layout supports at most four high-order cases"
+            )
+        figure.set_size_inches(17.0, 8.5)
+        grid = figure.add_gridspec(
+            2,
+            6,
+            width_ratios=[1.0, 1.0, 0.12, 1.0, 1.0, 0.08],
+        )
+        low_order_positions = [(0, 0), (0, 1), (1, 0), (1, 1)]
+        high_order_positions = [(0, 3), (0, 4), (1, 3), (1, 4)]
+        panel_positions = (
+            low_order_positions[:order_split]
+            + high_order_positions[: len(cases) - order_split]
+        )
+        axes = [figure.add_subplot(grid[position]) for position in panel_positions]
+        colorbar_axis = figure.add_subplot(grid[:, 5])
+    else:
+        ncols = min(2, len(cases))
+        nrows = (len(cases) + ncols - 1) // ncols
+        figure.set_size_inches(5.5 * ncols + 0.5, 5.0 * nrows)
+        grid = figure.add_gridspec(
+            nrows,
+            ncols + 1,
+            width_ratios=[1.0] * ncols + [0.08],
+        )
+        panel_positions = [
+            (index // ncols, index % ncols) for index in range(len(cases))
+        ]
+        axes = [figure.add_subplot(grid[position]) for position in panel_positions]
+        colorbar_axis = figure.add_subplot(grid[:, ncols])
+
     image = None
-    for axis, (label, _) in zip(axes.flat, cases):
+    for axis, (label, _) in zip(axes, cases):
         ds = datasets[label]
         extent = [
             float(ds.domain_left_edge[0].to_value("code_length")),
@@ -158,11 +188,8 @@ def render_comparison(field, output, title, colorbar_label, cmap, logarithmic):
         axis.set_xlabel("x")
         axis.set_ylabel("y")
 
-    for axis in axes.flat[len(cases) :]:
-        axis.set_visible(False)
-
     figure.suptitle(f"{title} at z = 0.5")
-    colorbar = figure.colorbar(image, ax=axes.ravel().tolist(), shrink=0.88)
+    colorbar = figure.colorbar(image, cax=colorbar_axis)
     colorbar.set_label(colorbar_label)
 
     output_path = Path(output).expanduser()

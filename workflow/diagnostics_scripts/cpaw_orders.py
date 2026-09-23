@@ -64,8 +64,8 @@ def main() -> None:
     args = parser.parse_args()
 
     rows = read_error_rows(args.error_file)
-    if len(rows) < 2:
-        raise SystemExit(f"Need at least two data rows in {args.error_file}")
+    if not rows:
+        raise SystemExit(f"No data rows found in {args.error_file}")
 
     lines: list[str] = []
     lines.append("Circularly polarized Alfven wave")
@@ -74,6 +74,8 @@ def main() -> None:
     header = f"{'N0->N1':>12}  " + "  ".join(f"{name:>10}" for name in COLUMNS)
     lines.append(header)
     lines.append("-" * len(header))
+    if len(rows) == 1:
+        lines.append("Observed orders require at least two resolutions.")
     for coarse, fine in zip(rows[:-1], rows[1:]):
         # The standard CPAW setup uses nx1 = 2*N and nx2 = nx3 = N.
         # Report and compute orders using that base resolution N.

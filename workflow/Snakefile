@@ -43,11 +43,28 @@ EXECUTION = config.get("execution", {})
 SIMULATION_ENVMODULES = EXECUTION.get(
     "envmodules", ["foss/2023a", "HDF5/1.14.0-gompi-2023a"]
 )
-SIMULATION_GPU_COUNT = int(EXECUTION.get("gpus", 0))
+SIMULATION_GPU_COUNT = int(
+    os.environ.get("ATHENAPK_LOCAL_GPU_COUNT", EXECUTION.get("gpus", 0))
+)
 SIMULATION_TASKS_PER_GPU = int(EXECUTION.get("tasks_per_gpu", 1))
 SIMULATION_CPUS_PER_GPU = int(EXECUTION.get("cpus_per_gpu", 1))
 SIMULATION_CONSTRAINT = EXECUTION.get("constraint")
+SIMULATION_QOS = EXECUTION.get("qos")
 SIMULATION_SLURM_EXTRA = EXECUTION.get("slurm_extra", "")
+NGHOST = int(config.get("nghost", 3))
+
+# A suite configuration may select tests with one compact list rather than
+# repeating enabled: true/false in every test block.  Configurations without
+# enabled_tests retain the historical per-test enabled flags.
+ENABLED_TESTS = config.get("enabled_tests")
+SUITE_TEST_DIMENSIONS = {
+    "cpaw": {"2D", "3D"},
+    "field_loop": {"2D", "3D"},
+    "orszag_tang": {"2D"},
+    "current_sheet": {"2D"},
+    "mhd_cloud_shock": {"3D"},
+    "mhd_blast": {"3D"},
+}
 
 if SIMULATION_GPU_COUNT < 0:
     raise ValueError("execution/gpus cannot be negative")
@@ -55,6 +72,37 @@ if SIMULATION_TASKS_PER_GPU < 1:
     raise ValueError("execution/tasks_per_gpu must be positive")
 if SIMULATION_CPUS_PER_GPU < 1:
     raise ValueError("execution/cpus_per_gpu must be positive")
+if NGHOST < 1:
+    raise ValueError("nghost must be positive")
+if ENABLED_TESTS is not None:
+    if not isinstance(ENABLED_TESTS, list):
+        raise ValueError("enabled_tests must be a list")
+    if any(not isinstance(test, str) for test in ENABLED_TESTS):
+        raise ValueError("enabled_tests entries must be strings")
+    if len(ENABLED_TESTS) != len(set(ENABLED_TESTS)):
+        raise ValueError("enabled_tests contains duplicate entries")
+
+    unknown_tests = sorted(set(ENABLED_TESTS) - set(SUITE_TEST_DIMENSIONS))
+    if unknown_tests:
+        raise ValueError(
+            "enabled_tests contains unsupported suite tests: "
+            + ", ".join(unknown_tests)
+        )
+
+    dimension = config.get("dimension")
+    incompatible_tests = sorted(
+        test
+        for test in ENABLED_TESTS
+        if dimension not in SUITE_TEST_DIMENSIONS[test]
+    )
+    if incompatible_tests:
+        raise ValueError(
+            f"The following tests do not support dimension={dimension}: "
+            + ", ".join(incompatible_tests)
+        )
+
+    for test_name, test_config in config.get("tests", {}).items():
+        test_config["enabled"] = test_name in ENABLED_TESTS
 
 
 for executable_key in ("athenapk", "athenapk_mpi", "athenapk_mpi_hdf5"):

@@ -1,0 +1,176 @@
+# Direct single-GPU MHD validation suite for dev-amd20-v100.
+#
+# Select either dimension and any compatible subset of tests:
+#   2D: cpaw, field_loop, orszag_tang, current_sheet
+#   3D: cpaw, field_loop, mhd_cloud_shock, mhd_blast
+#
+# Run with:
+#   ./workflow/run_snakemake_gpu_local.sh GPU_INDEX \
+#     workflow/config_gpu_test_suite.yaml
+
+plotting_python: /mnt/home/wysongj2/.conda/envs/mhd/bin/python
+gnuplot: /mnt/home/wysongj2/.conda/envs/mhd/bin/gnuplot
+athenapk: build-gpu-v100/bin/athenaPK
+athenapk_mpi: build-gpu-v100/bin/athenaPK
+athenapk_mpi_hdf5: build-gpu-v100/bin/athenaPK
+
+results_root: /mnt/gs21/scratch/wysongj2/athenapk-fourth-order-Teissier24/gpu-runs-performance-new/gpu-direct-test-suite/cpaw_3D
+
+execution:
+  envmodules:
+    - foss/2023a
+    - HDF5/1.14.0-gompi-2023a
+    - CUDA/12.3.0
+  gpus: 2
+  tasks_per_gpu: 1
+  cpus_per_gpu: 1
+  constraint: nvf
+  slurm_extra: "--gpu-bind=closest"
+
+# Change this to 2D or 3D, then select a compatible subset below.
+
+#################################
+#         3D                    #
+#################################
+# dimension: 3D
+# enabled_tests: [cpaw, field_loop, mhd_cloud_shock, mhd_blast]
+
+dimension: 3D
+enabled_tests: [cpaw]
+
+#################################
+#         2D                    #
+#################################
+# dimension: 2D
+# enabled_tests: [cpaw, field_loop, orszag_tang, current_sheet]
+
+
+# Numerical method. Keep scheme_id unique for every distinct configuration so
+# that results from different methods are never placed in the same directory.
+
+#################################
+# 4th order hlld_line           #
+#################################
+# scheme_id: uct4_hlld_line
+# fluids: [ucthlldmhd]
+# reconstruction: weno5js
+# riemann: hlld
+# integrator: rk4
+# convergence_order: 4
+# nghost: 3
+# hydro_options:
+#   uct_solver: hlld_line
+#   scratch_level: 1
+#   first_order_flux_correct: false
+#################################
+
+#################################
+# 4th order llf_line           #
+#################################
+scheme_id: uct4_llf_line_mpi2
+fluids: [ucthlldmhd]
+reconstruction: weno5js
+riemann: llf
+integrator: rk4
+convergence_order: 4
+nghost: 3
+hydro_options:
+  uct_solver: llf_line
+  scratch_level: 1
+  first_order_flux_correct: false
+#################################
+
+#################################
+# 2nd order weno3js             #
+#################################
+# scheme_id: uct2_weno3js
+# fluids: [ucthlldmhd]
+# reconstruction: weno3js
+# riemann: hlld
+# integrator: rk3
+# convergence_order: 2
+# nghost: 2
+# hydro_options:
+#   uct_solver: none
+#   scratch_level: 1
+#   first_order_flux_correct: false
+#################################
+
+tests:
+  cpaw:
+    cfl: 0.3
+    periods: 1.0
+    mode: 16
+    resolutions: [16, 32, 64, 128, 256]
+    mesh:
+      2D:
+        ang_2: 0.0
+        mpi_tasks: 1
+        mem_mb_per_cpu: 8000
+        launcher: direct
+      3D:
+        mpi_tasks: 2
+        mem_mb_per_cpu: 8000
+        launcher: mpirun
+
+  field_loop:
+    cfl: 0.3
+    mesh:
+      2D:
+        nx1: 128
+        nx2: 64
+        nx3: 1
+        mb_nx1: 128
+        mb_nx2: 64
+        mb_nx3: 1
+        iprob: 1
+      3D:
+        nx1: 128
+        nx2: 64
+        nx3: 64
+        mb_nx1: 64
+        mb_nx2: 32
+        mb_nx3: 32
+        iprob: 4
+
+  orszag_tang:
+    cfl: 0.3
+    tlim: 1.0
+    output_dt: 0.01
+    resolution: [128, 128]
+    meshblock: [128, 128]
+    launcher: direct
+    nodes: 1
+    mpi_tasks: 1
+    mem_mb_per_cpu: 10000
+    runtime: 120
+    diagnostic_mem_mb: 4000
+    diagnostic_runtime: 60
+
+  current_sheet:
+    cfl: 0.3
+    tlim: 10.0
+    output_dt: 0.05
+    resolution: [128, 128]
+    meshblock: [128, 128]
+
+  mhd_cloud_shock:
+    cfl: 0.3
+    resolution: [128, 128, 128]
+    meshblock: [64, 64, 64]
+    output_dt: 0.002
+    fps: 8
+    launcher: direct
+    mpi_tasks: 1
+    mem_mb_per_cpu: 8000
+
+  mhd_blast:
+    cfl: 0.3
+    resolution: [128, 128, 128]
+    meshblock: [64, 64, 64]
+    tlim: 0.2
+    output_dt: 0.01
+    fps: 8
+    launcher: direct
+    mpi_tasks: 1
+    mem_mb_per_cpu: 8000

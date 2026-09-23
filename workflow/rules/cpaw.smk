@@ -7,6 +7,10 @@ CPAW_MESH = CPAW.get("mesh", {}).get(CPAW_DIMENSION, {})
 CPAW_CONFIGURED_MB = CPAW_MESH.get("meshblock")
 CPAW_REQUESTED_MPI_TASKS = int(CPAW_MESH.get("mpi_tasks", 1))
 CPAW_MEM_MB_PER_CPU = int(CPAW_MESH.get("mem_mb_per_cpu", 4000))
+CPAW_LAUNCHER_MODE = CPAW_MESH.get("launcher", "srun")
+CPAW_CFL = float(CPAW.get("cfl", 0.3))
+CPAW_PERIODS = float(CPAW.get("periods", 1.0))
+CPAW_MODE = int(CPAW.get("mode", 1))
 
 if CPAW_DIMENSION not in ("2D", "3D"):
     raise ValueError("cpaw supports only dimension: 2D or 3D")
@@ -19,6 +23,16 @@ if CPAW_REQUESTED_MPI_TASKS <= 0:
     raise ValueError("cpaw mpi_tasks must be positive")
 if CPAW_MEM_MB_PER_CPU <= 0:
     raise ValueError("cpaw mem_mb_per_cpu must be positive")
+if CPAW_CFL <= 0.0:
+    raise ValueError("cpaw cfl must be positive")
+if CPAW_PERIODS <= 0.0:
+    raise ValueError("cpaw periods must be positive")
+if CPAW_MODE <= 0:
+    raise ValueError("cpaw mode must be a positive integer")
+if CPAW_LAUNCHER_MODE not in ("direct", "srun", "mpirun"):
+    raise ValueError("cpaw launcher must be 'direct', 'srun', or 'mpirun'")
+if CPAW_LAUNCHER_MODE == "direct" and CPAW_REQUESTED_MPI_TASKS != 1:
+    raise ValueError("cpaw launcher=direct requires mpi_tasks=1")
 
 
 def cpaw_grid_shape(n):
@@ -61,11 +75,22 @@ def cpaw_mpi_tasks(wildcards):
 def cpaw_mpi_resource(wildcards):
     # The Slurm executor rejects mpi="srun" when tasks=1. The shell command
     # still explicitly launches that singleton with srun below.
-    return "srun" if cpaw_mpi_tasks(wildcards) > 1 else False
+    return (
+        "srun"
+        if CPAW_LAUNCHER_MODE == "srun" and cpaw_mpi_tasks(wildcards) > 1
+        else False
+    )
 
 
 def cpaw_launcher(wildcards):
     tasks = cpaw_mpi_tasks(wildcards)
+    if CPAW_LAUNCHER_MODE == "direct":
+        return ""
+    if CPAW_LAUNCHER_MODE == "mpirun":
+        return (
+            "mpirun --mca pml ob1 --mca btl self,smcuda,tcp "
+            f"--bind-to core -np {tasks}"
+        )
     # This executable is MPI-enabled even for a one-block run. Keep an explicit
     # launcher for one rank as well; otherwise Snakemake's Slurm jobstep directly
     # launches the binary in an srun allocation without the site's MPI setup.
@@ -105,6 +130,9 @@ rule run_cpaw:
         nx1_mb=lambda wc: cpaw_meshblock_shape(wc.N)[0],
         nx2_mb=lambda wc: cpaw_meshblock_shape(wc.N)[1],
         nx3_mb=lambda wc: cpaw_meshblock_shape(wc.N)[2],
+        cfl=CPAW_CFL,
+        periods=CPAW_PERIODS,
+        mode=CPAW_MODE,
         launcher=cpaw_launcher
     resources:
         runtime=120,
@@ -128,15 +156,16 @@ rule run_cpaw:
           problem/cpaw/compute_error=true \
           problem/cpaw/ang_2={params.ang_2} \
           problem/cpaw/v_par=1.0 \
+          problem/cpaw/mode={params.mode} \
           parthenon/mesh/nx1={params.nx1} \
           parthenon/mesh/nx2={params.nx2} \
           parthenon/mesh/nx3={params.nx3} \
-          parthenon/mesh/nghost=3 \
+          parthenon/mesh/nghost={NGHOST} \
           parthenon/meshblock/nx1={params.nx1_mb} \
           parthenon/meshblock/nx2={params.nx2_mb} \
           parthenon/meshblock/nx3={params.nx3_mb} \
-          parthenon/time/tlim=1.0 \
-          parthenon/time/cfl=0.3 \
+          parthenon/time/tlim={params.periods} \
+          parthenon/time/cfl={params.cfl} \
           parthenon/time/integrator={config[integrator]} \
           hydro/fluid={wildcards.fluid} \
           hydro/riemann={config[riemann]} \

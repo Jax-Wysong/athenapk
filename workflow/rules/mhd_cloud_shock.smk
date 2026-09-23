@@ -21,6 +21,9 @@ MHD_CLOUD_SHOCK_MB = MHD_CLOUD_SHOCK["meshblock"]
 MHD_CLOUD_SHOCK_FLUIDS = MHD_CLOUD_SHOCK.get("fluids", config["fluids"])
 MHD_CLOUD_SHOCK_HYDRO_OPTIONS = hydro_cli_options(MHD_CLOUD_SHOCK)
 MHD_CLOUD_SHOCK_OUTPUT_VARIABLES = output_variable_list(MHD_CLOUD_SHOCK)
+MHD_CLOUD_SHOCK_CFL = float(MHD_CLOUD_SHOCK.get("cfl", 0.3))
+if MHD_CLOUD_SHOCK_CFL <= 0.0:
+    raise ValueError("mhd_cloud_shock cfl must be positive")
 MHD_CLOUD_SHOCK_NUM_BLOCKS = (
     ((MHD_CLOUD_SHOCK_RESOLUTION[0] + MHD_CLOUD_SHOCK_MB[0] - 1) // MHD_CLOUD_SHOCK_MB[0])
     * ((MHD_CLOUD_SHOCK_RESOLUTION[1] + MHD_CLOUD_SHOCK_MB[1] - 1) // MHD_CLOUD_SHOCK_MB[1])
@@ -104,6 +107,7 @@ rule run_mhd_cloud_shock:
         mb_nx2=MHD_CLOUD_SHOCK_MB[1],
         mb_nx3=MHD_CLOUD_SHOCK_MB[2],
         output_dt=MHD_CLOUD_SHOCK["output_dt"],
+        cfl=MHD_CLOUD_SHOCK_CFL,
         launcher=MHD_CLOUD_SHOCK_LAUNCHER
     resources:
         runtime=239,
@@ -133,9 +137,9 @@ rule run_mhd_cloud_shock:
           parthenon/meshblock/nx1={params.mb_nx1} \
           parthenon/meshblock/nx2={params.mb_nx2} \
           parthenon/meshblock/nx3={params.mb_nx3} \
-          parthenon/mesh/nghost=3 \
+          parthenon/mesh/nghost={NGHOST} \
           parthenon/time/tlim=0.06 \
-          parthenon/time/cfl=0.3 \
+          parthenon/time/cfl={params.cfl} \
           parthenon/time/integrator={config[integrator]} \
           hydro/fluid={wildcards.fluid} \
           hydro/riemann={config[riemann]} \

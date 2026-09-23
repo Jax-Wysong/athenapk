@@ -169,20 +169,51 @@ TURBULENCE_NUM_BLOCKS = (
     * ((TURBULENCE_RESOLUTION[1] + TURBULENCE_MB[1] - 1) // TURBULENCE_MB[1])
     * ((TURBULENCE_RESOLUTION[2] + TURBULENCE_MB[2] - 1) // TURBULENCE_MB[2])
 )
-TURBULENCE_MPI_TASKS = min(TURBULENCE["mpi_tasks"], TURBULENCE_NUM_BLOCKS)
-TURBULENCE_MPI_RESOURCE = "srun" if TURBULENCE_MPI_TASKS > 1 else False
 TURBULENCE_LAUNCHER_MODE = TURBULENCE.get("launcher", "srun")
-if TURBULENCE_LAUNCHER_MODE not in ("direct", "srun"):
-    raise ValueError("turbulence launcher must be 'direct' or 'srun'")
+local_mpi_tasks = os.environ.get("ATHENAPK_LOCAL_MPI_TASKS")
+configured_mpi_tasks = (
+    int(local_mpi_tasks)
+    if local_mpi_tasks is not None
+    else int(TURBULENCE["mpi_tasks"])
+)
+if configured_mpi_tasks < 1:
+    raise ValueError("turbulence mpi_tasks must be positive")
+if configured_mpi_tasks > TURBULENCE_NUM_BLOCKS:
+    raise ValueError(
+        "turbulence mpi_tasks cannot exceed the number of meshblocks"
+    )
+TURBULENCE_MPI_TASKS = configured_mpi_tasks
+if TURBULENCE_LAUNCHER_MODE not in ("direct", "srun", "mpirun"):
+    raise ValueError("turbulence launcher must be 'direct', 'srun', or 'mpirun'")
 if TURBULENCE_LAUNCHER_MODE == "direct":
     if TURBULENCE_MPI_TASKS != 1:
         raise ValueError(
             "turbulence launcher=direct requires mpi_tasks=1; "
-            "use launcher=srun for a multi-rank run"
+            "use launcher=srun or launcher=mpirun for a multi-rank run"
         )
     TURBULENCE_LAUNCHER = ""
-else:
+elif TURBULENCE_LAUNCHER_MODE == "srun":
     TURBULENCE_LAUNCHER = f"srun -n {TURBULENCE_MPI_TASKS}"
+else:
+    if TURBULENCE["nodes"] != 1:
+        raise ValueError("turbulence launcher=mpirun is restricted to one node")
+    TURBULENCE_LAUNCHER = (
+        ""
+        if TURBULENCE_MPI_TASKS == 1
+        # The site UCX library is not CUDA-aware. Force OpenMPI's CUDA-aware
+        # intra-node transport so device-resident Parthenon communication
+        # buffers are not passed through UCX's host memcpy path.
+        else (
+            "mpirun --mca pml ob1 --mca btl self,smcuda,tcp "
+            f"--map-by ppr:2:socket:PE={SIMULATION_CPUS_PER_GPU} "
+            f"--bind-to core -np {TURBULENCE_MPI_TASKS}"
+        )
+    )
+TURBULENCE_MPI_RESOURCE = (
+    "srun"
+    if TURBULENCE_LAUNCHER_MODE == "srun" and TURBULENCE_MPI_TASKS > 1
+    else False
+)
 if TURBULENCE["nodes"] < 1:
     raise ValueError("turbulence nodes must be positive")
 if TURBULENCE_MPI_TASKS < TURBULENCE["nodes"]:
@@ -214,6 +245,15 @@ def turbulence_problem_id(case):
 def turbulence_spectrum_out(case):
     return f"{turbulence_run_out(case)}/spectra"
 
+
+def turbulence_case_executable(wildcards):
+    """Select a case-specific AthenaPK build, falling back to the global build."""
+    executable = TURBULENCE_CASES[wildcards.case].get(
+        "executable", config["athenapk_mpi_hdf5"]
+    )
+    return repo_path(executable)
+
+
 def turbulence_restart_input(wildcards):
     restart = TURBULENCE_RESTART_FROM.get(wildcards.case)
     return [restart] if restart else []
@@ -239,7 +279,7 @@ if TURBULENCE["enabled"]:
 
 rule run_turbulence:
     input:
-        exe=config["athenapk_mpi_hdf5"],
+        exe=turbulence_case_executable,
         deck=TURBULENCE["input"],
         restart=turbulence_restart_input
     output:
@@ -307,6 +347,7 @@ rule run_turbulence:
         tasks_per_gpu=SIMULATION_TASKS_PER_GPU,
         cpus_per_gpu=SIMULATION_CPUS_PER_GPU,
         constraint=SIMULATION_CONSTRAINT,
+        qos=SIMULATION_QOS,
         slurm_extra=SIMULATION_SLURM_EXTRA
     shell:
         """
@@ -486,7 +527,8 @@ rule plot_turbulence_energies:
         done=expand(
             f"{turbulence_out()}/{{case}}/phdf-files/run.done",
             case=TURBULENCE_CASE_NAMES,
-        )
+        ),
+        script=TURBULENCE["energy_plotting_script"]
     output:
         plot=report(
             f"{turbulence_out()}/turbulence_mean_energies.png",
@@ -516,7 +558,7 @@ rule plot_turbulence_energies:
         mem_mb=2000
     shell:
         """
-        {config[plotting_python]} {TURBULENCE[energy_plotting_script]} \
+        {config[plotting_python]} {input.script} \
           {params.case_args} \
           --plot {output.plot} \
           --summary {output.summary}
@@ -528,7 +570,8 @@ rule plot_turbulence_slices:
         done=expand(
             f"{turbulence_out()}/{{case}}/phdf-files/run.done",
             case=TURBULENCE_CASE_NAMES,
-        )
+        ),
+        script=TURBULENCE["slice_plotting_script"]
     output:
         density=report(
             f"{turbulence_out()}/turbulence_density_final.png",
@@ -566,7 +609,7 @@ rule plot_turbulence_slices:
         mem_mb=16000
     shell:
         """
-        {config[plotting_python]} {TURBULENCE[slice_plotting_script]} \
+        {config[plotting_python]} {input.script} \
           {params.case_args} \
           --density {output.density} \
           --bmag {output.bmag} \
