@@ -572,7 +572,7 @@ TaskCollection HydroDriver::MakeTaskCollection(BlockList_t &blocks, int stage) {
     TaskID update_face = update_flx;
     if (fluid == Fluid::ctmhd || fluid == Fluid::ucthlldmhd) {
       update_face = tl.AddTask(
-          update_flx, Hydro::CTMHD::UpdateWithFaceMagDivergence, mu0.get(),
+          update_flx, Hydro::CTMHD::UpdateWithFluxEmfCurl, mu0.get(),
           mu1.get(), integrator->gam0[stage - 1], integrator->gam1[stage - 1],
           integrator->beta[stage - 1] * integrator->dt);
     }

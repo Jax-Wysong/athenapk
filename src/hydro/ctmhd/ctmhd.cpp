@@ -342,7 +342,7 @@ TaskStatus Assemble_Corner_EMF(MeshData<Real> *md) {
 }
 
 
-TaskStatus UpdateWithFaceMagDivergence(MeshData<Real> *mu0, MeshData<Real> *mu1, const Real gam0, const Real gam1, const Real beta_dt) {
+TaskStatus UpdateWithFluxEmfCurl(MeshData<Real> *mu0, MeshData<Real> *mu1, const Real gam0, const Real gam1, const Real beta_dt) {
     auto pmb = mu0->GetBlockData(0)->GetBlockPointer();
     const int ndim = pmb->pmy_mesh->ndim;
 

@@ -1,11 +1,15 @@
 # Importing important libraries
 import numpy as np
 import matplotlib.animation as animation
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 import yt
 
 import argparse
+import os
 from pathlib import Path
+import shutil
+import sys
 
 
 parser = argparse.ArgumentParser(
@@ -18,6 +22,24 @@ parser.add_argument(
 parser.add_argument("--fps", type=int, default=8, help="Movie frame rate")
 
 args = parser.parse_args()
+
+# Calling this script with an absolute path to a Conda Python does not activate
+# that environment or add its bin directory to PATH.  Prefer ffmpeg from PATH,
+# but also look beside the running Python executable so batch jobs can find the
+# encoder without requiring shell activation.
+ffmpeg = shutil.which("ffmpeg")
+if ffmpeg is None:
+    environment_ffmpeg = Path(sys.executable).resolve().with_name("ffmpeg")
+    if environment_ffmpeg.is_file() and os.access(environment_ffmpeg, os.X_OK):
+        ffmpeg = str(environment_ffmpeg)
+
+if ffmpeg is None:
+    raise RuntimeError(
+        "ffmpeg is required to write field-loop MP4 movies, but it was not "
+        "found in PATH or beside the active Python executable"
+    )
+
+mpl.rcParams["animation.ffmpeg_path"] = ffmpeg
 
 data_dir = Path(args.directory).expanduser()
 files = sorted(data_dir.glob("*.phdf"))

@@ -394,6 +394,7 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
   pkg->AddParam<>("nhydro", nhydro);
   pkg->AddParam<>("nuct_hlld_aux", nuct_hlld_aux);
 
+  // used/explain in hydro/ctmhd/ctmhd.cpp function - center_Mag_Field()
   bool ct_energy_correction = false;
   if (fluid == Fluid::ctmhd || fluid == Fluid::ucthlldmhd) {
     ct_energy_correction =
