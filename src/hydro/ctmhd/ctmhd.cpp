@@ -14,6 +14,8 @@
 // AthenaPK headers
 #include "../../main.hpp"
 #include "ctmhd.hpp"
+#include "ct_update_helpers.hpp"
+
 
 using namespace parthenon::package::prelude;
 using TE = parthenon::TopologicalElement;
@@ -406,29 +408,11 @@ TaskStatus UpdateWithFluxEmfCurl(MeshData<Real> *mu0, MeshData<Real> *mu1,
         auto &B0 = B0_pack(b);
         auto &B1 = B1_pack(b);
 
-        Real &B0n = B0(TE::F1, 0, k, j, i);
-        Real &B1n = B1(TE::F1, 0, k, j, i);
+        B0(TE::F1, 0, k, j, i) = 
+          Hydro::CTMHD::StageB1FaceValue(
+            B0, B1, coords, ndim, k, j, i,
+            gam0, gam1, beta_dt);
 
-        B0n = gam0 * B0n + gam1 * B1n;
-        // Only Bx is face-evolved in 1D. No edge fluxes exist in 1D;
-        // By/Bz remain in the cell-centered FV update.
-        if (ndim == 1) return;
-        const Real dy = coords.Dxc<2>(k, j, i);
-
-        const Real emfz_corner_j_i =
-            B0.template flux<parthenon::TopologicalType::Edge>(X3DIR, 0, k, j, i);
-        const Real emfz_corner_jp1_i =
-            B0.template flux<parthenon::TopologicalType::Edge>(X3DIR, 0, k, j + 1, i);
-        B0n += beta_dt * (emfz_corner_j_i - emfz_corner_jp1_i) / dy;
-
-        if (ndim >= 3) {
-          const Real dz = coords.Dxc<3>(k, j, i);
-          const Real emfy_corner_k_i =
-              B0.template flux<parthenon::TopologicalType::Edge>(X2DIR, 0, k, j, i);
-          const Real emfy_corner_kp1_i =
-              B0.template flux<parthenon::TopologicalType::Edge>(X2DIR, 0, k + 1, j, i);
-          B0n += -beta_dt * (emfy_corner_k_i - emfy_corner_kp1_i) / dz;
-        }
       });
   if (ndim >= 2) {
     parthenon::par_for(
@@ -436,32 +420,15 @@ TaskStatus UpdateWithFluxEmfCurl(MeshData<Real> *mu0, MeshData<Real> *mu1,
         B0_pack.GetDim(5) - 1, kb.s, kb.e, jb.s, jb.e + 1, ib.s, ib.e,
         KOKKOS_LAMBDA(const int b, const int k, const int j, const int i) {
           const auto &coords = B0_pack.GetCoords(b);
-          const Real dx = coords.Dxc<1>(k, j, i); // cell-spacing 'width' in x
 
           auto &B0 = B0_pack(b);
           auto &B1 = B1_pack(b);
 
-          Real &B0n = B0(TE::F2, 0, k, j, i);
-          Real &B1n = B1(TE::F2, 0, k, j, i);
+          B0(TE::F2, 0, k, j, i) = 
+            Hydro::CTMHD::StageB2FaceValue(
+              B0, B1, coords, ndim, k, j, i,
+              gam0, gam1, beta_dt);
 
-          B0n = gam0 * B0n + gam1 * B1n;
-
-          const Real emfz_corner_j_i =
-              B0.template flux<parthenon::TopologicalType::Edge>(X3DIR, 0, k, j, i);
-          const Real emfz_corner_j_ip1 =
-              B0.template flux<parthenon::TopologicalType::Edge>(X3DIR, 0, k, j, i + 1);
-
-          B0n += -beta_dt * (emfz_corner_j_i - emfz_corner_j_ip1) / dx;
-
-          if (ndim >= 3) {
-            const Real dz = coords.Dxc<3>(k, j, i);
-            const Real emfx_corner_j_k =
-                B0.template flux<parthenon::TopologicalType::Edge>(X1DIR, 0, k, j, i);
-            const Real emfx_corner_j_kp1 =
-                B0.template flux<parthenon::TopologicalType::Edge>(X1DIR, 0, k + 1, j, i);
-
-            B0n += beta_dt * (emfx_corner_j_k - emfx_corner_j_kp1) / dz;
-          }
         });
   }
   if (ndim >= 3) {
@@ -470,29 +437,15 @@ TaskStatus UpdateWithFluxEmfCurl(MeshData<Real> *mu0, MeshData<Real> *mu1,
         B0_pack.GetDim(5) - 1, kb.s, kb.e + 1, jb.s, jb.e, ib.s, ib.e,
         KOKKOS_LAMBDA(const int b, const int k, const int j, const int i) {
           const auto &coords = B0_pack.GetCoords(b);
-          const Real dx = coords.Dxc<1>(k, j, i); // cell-spacing 'width' in x
-          const Real dy = coords.Dxc<2>(k, j, i);
 
           auto &B0 = B0_pack(b);
           auto &B1 = B1_pack(b);
 
-          Real &B0n = B0(TE::F3, 0, k, j, i);
-          Real &B1n = B1(TE::F3, 0, k, j, i);
+          B0(TE::F3, 0, k, j, i) = 
+            Hydro::CTMHD::StageB3FaceValue(
+              B0, B1, coords, ndim, k, j, i,
+              gam0, gam1, beta_dt);
 
-          B0n = gam0 * B0n + gam1 * B1n;
-
-          const Real emfy_corner_k_i =
-              B0.template flux<parthenon::TopologicalType::Edge>(X2DIR, 0, k, j, i);
-          const Real emfy_corner_k_ip1 =
-              B0.template flux<parthenon::TopologicalType::Edge>(X2DIR, 0, k, j, i + 1);
-
-          const Real emfx_corner_j_k =
-              B0.template flux<parthenon::TopologicalType::Edge>(X1DIR, 0, k, j, i);
-          const Real emfx_corner_jp1_k =
-              B0.template flux<parthenon::TopologicalType::Edge>(X1DIR, 0, k, j + 1, i);
-
-          B0n += beta_dt * (emfy_corner_k_i - emfy_corner_k_ip1) / dx;
-          B0n += -beta_dt * (emfx_corner_j_k - emfx_corner_jp1_k) / dy;
         });
   }
   return TaskStatus::complete;
