@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <vector>
 #include <iomanip>
@@ -562,7 +563,7 @@ TaskStatus FirstOrderFluxCorrectCT(
                     parthenon::Update::FluxDivHelper(v, k, j, i, ndim, coords, mu0_cons);
           }
 
-          // Update magnetic field
+          // Update magnetic field and put it in new_cons[IB1:IB3]
           Hydro::CTMHD::PredictCTStageConserved(
             mu0_Bface_pack(b), mu1_Bface_pack(b),
             coords, ndim,
@@ -576,27 +577,13 @@ TaskStatus FirstOrderFluxCorrectCT(
             trial_pack(b, v, k, j, i) = new_cons[v];
           }
 
-          for (int v = 0; v < NVAR; ++v) {
-            if (!Kokkos::isfinite(new_cons[v])) {
-              ++lnum_bad;
-              return;
-            }
-          }
-          // Check density before dividing by it. Count each bad cell once.
-          if (new_cons[IDN] <= 0.0) {
+          // helper to check dens or thermal energy
+          // is negative or nan
+          if (!IsCTStateAdmissible(new_cons)) {
             ++lnum_bad;
-            return;
           }
+          
 
-          // Thermal energy density has the same sign as pressure for gamma > 1.
-          const Real thermal_energy =
-              new_cons[IEN] -
-              0.5 * (SQR(new_cons[IM1]) + SQR(new_cons[IM2]) + SQR(new_cons[IM3])) /
-                  new_cons[IDN] -
-              0.5 * (SQR(new_cons[IB1]) + SQR(new_cons[IB2]) + SQR(new_cons[IB3]));
-          if (!Kokkos::isfinite(thermal_energy) || thermal_energy <= 0.0) {
-            ++lnum_bad;
-          }
         },
         Kokkos::Sum<std::int64_t>(num_bad));
 
@@ -687,6 +674,62 @@ TaskStatus CompareCTTrialState(MeshData<Real> *mu0, const int stage)
 
   return TaskStatus::complete;
 
+}
+
+TaskStatus TestCTStateAdmissibility() {
+  // Synthetic local states only: no mesh data or simulation fields are touched.
+  constexpr int NVAR = IB3 + 1;
+  constexpr int NUM_CASES = 28;
+  const Real nan_value = std::numeric_limits<Real>::quiet_NaN();
+  const Real inf_value = std::numeric_limits<Real>::infinity();
+  const Real max_value = std::numeric_limits<Real>::max();
+  std::int64_t num_mismatches = 0;
+
+  Kokkos::parallel_reduce(
+      "TestCTStateAdmissibility",
+      Kokkos::RangePolicy<parthenon::DevExecSpace>(0, NUM_CASES),
+      KOKKOS_LAMBDA(const int case_id, std::int64_t &local_mismatches) {
+        // Valid reference: rho=1, momentum=0, E=3, B=(1,0,0), e_th=2.5.
+        Real state[NVAR] = {};
+        state[IDN] = 1.0;
+        state[IEN] = 3.0;
+        state[IB1] = 1.0;
+
+        if (case_id == 1) {
+          state[IDN] = 0.0;
+        } else if (case_id == 2) {
+          state[IDN] = -1.0;
+        } else if (case_id == 3) {
+          state[IEN] = 0.5; // Exactly zero thermal energy.
+        } else if (case_id == 4) {
+          state[IEN] = 0.25; // Negative thermal energy despite positive total E.
+        } else if (case_id >= 5 && case_id <= 7) {
+          state[IM1 + case_id - 5] = 3.0; // Excess kinetic energy, each component.
+        } else if (case_id >= 8 && case_id <= 10) {
+          state[IB1 + case_id - 8] = 3.0; // Excess magnetic energy, each component.
+        } else if (case_id >= 11 && case_id <= 18) {
+          state[case_id - 11] = nan_value; // NaN in each conserved component.
+        } else if (case_id >= 19 && case_id <= 26) {
+          state[case_id - 19] = inf_value; // Infinity in each component.
+        } else if (case_id == 27) {
+          state[IM1] = max_value; // Finite input whose kinetic energy overflows.
+        }
+
+        const bool expected = (case_id == 0);
+        const bool actual = IsCTStateAdmissible(state);
+        if (actual != expected) {
+          ++local_mismatches;
+        }
+      },
+      Kokkos::Sum<std::int64_t>(num_mismatches));
+
+  std::cout << "[CT admissibility self-test] rank=" << parthenon::Globals::my_rank
+            << " cases=" << NUM_CASES << " mismatches=" << num_mismatches
+            << " status=" << (num_mismatches == 0 ? "PASS" : "FAIL") << std::endl;
+  PARTHENON_REQUIRE(num_mismatches == 0,
+                    "CT admissibility self-test classified a synthetic state incorrectly.");
+
+  return TaskStatus::complete;
 }
 
 } // namespace Hydro::CTMHD

@@ -353,6 +353,15 @@ TaskCollection HydroDriver::MakeTaskCollection(BlockList_t &blocks, int stage) {
   auto hydro_pkg = blocks[0]->packages.Get("Hydro");
 
   TaskID none(0);
+
+  if (hydro_pkg->Param<bool>("ct_fofc_diagnostics") &&
+      stage == 1 && tm.ncycle == 0) {
+    TaskRegion &ct_self_test_region = tc.AddRegion(1);
+    auto &tl = ct_self_test_region[0];
+
+    tl.AddTask(none, Hydro::CTMHD::TestCTStateAdmissibility);
+  }
+
   // Number of task lists that can be executed indepenently and thus *may*
   // be executed in parallel and asynchronous.
   // Being extra verbose here in this example to highlight that this is not

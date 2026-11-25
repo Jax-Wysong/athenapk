@@ -32,6 +32,8 @@ TaskStatus FirstOrderFluxCorrectCT(
 // Diagnostic-only stage prediction; does not yet correct fluxes or EMFs.
 TaskStatus CompareCTTrialState(MeshData<Real> *mu0, const int stage);
 
+TaskStatus TestCTStateAdmissibility();
+
 } // namespace Hydro::CTMHD
 
 #endif // HYDRO_CTMHD_CTMHD_HPP_

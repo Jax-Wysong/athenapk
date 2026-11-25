@@ -14,6 +14,9 @@
 #include "../../main.hpp"
 #include "ct_update_helpers.hpp"
 
+// Kokkos headers
+#include <Kokkos_MathematicalFunctions.hpp>
+
 using namespace parthenon::package::prelude;
 
 namespace Hydro::CTMHD {
@@ -100,6 +103,31 @@ void PredictCTStageConserved(
 
 }
 
+KOKKOS_INLINE_FUNCTION
+bool IsCTStateAdmissible(const parthenon::Real *state) {
+    for (int v = 0; v < IB3+1; ++v) {
+        if (!Kokkos::isfinite(state[v])) {
+            return false;
+        }
+    }
+
+    // Check density before dividing by it. Count each bad cell once.
+    if (state[IDN] <= 0.0) {
+        return false;
+    }
+
+    // Thermal energy density has the same sign as pressure for gamma > 1.
+    const Real thermal_energy =
+        state[IEN] -
+        0.5 * (SQR(state[IM1]) + SQR(state[IM2]) + SQR(state[IM3])) /
+            state[IDN] -
+        0.5 * (SQR(state[IB1]) + SQR(state[IB2]) + SQR(state[IB3]));
+    if (!Kokkos::isfinite(thermal_energy) || thermal_energy <= 0.0) {
+        return false;
+    }
+
+    return true;
+}
 
 } // namespace Hydro::CTMHD
 
