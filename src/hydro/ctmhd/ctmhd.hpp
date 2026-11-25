@@ -24,6 +24,14 @@ TaskStatus UpdateWithFluxEmfCurl(MeshData<Real> *mu0, MeshData<Real> *mu1,
 
 void center_Mag_Field(MeshData<Real> *md);
 
+// Diagnostic-only stage prediction; does not yet correct fluxes or EMFs.
+TaskStatus FirstOrderFluxCorrectCT(
+    MeshData<Real> *mu0, MeshData<Real> *mu1,
+    const Real gam0, const Real gam1, const Real beta_dt);
+
+// Diagnostic-only stage prediction; does not yet correct fluxes or EMFs.
+TaskStatus CompareCTTrialState(MeshData<Real> *mu0, const int stage);
+
 } // namespace Hydro::CTMHD
 
 #endif // HYDRO_CTMHD_CTMHD_HPP_

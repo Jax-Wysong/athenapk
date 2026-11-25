@@ -558,10 +558,21 @@ TaskCollection HydroDriver::MakeTaskCollection(BlockList_t &blocks, int stage) {
     auto set_flx = tl.AddTask(recv_flx | first_order_flux_correct,
                               parthenon::SetFluxCorrections, mu0);
 
+    TaskID update_dep = set_flx;
+
+    if (hydro_pkg->Param<bool>("ct_fofc_diagnostics")) {
+      update_dep = tl.AddTask(
+          set_flx, Hydro::CTMHD::FirstOrderFluxCorrectCT,
+          mu0.get(), mu1.get(),
+          integrator->gam0[stage - 1],
+          integrator->gam1[stage - 1],
+          integrator->beta[stage - 1] * integrator->dt);
+    }
+
     // compute the divergence of fluxes of conserved variables
     // -------------- CT Step 3a. (RK update the flux) --------------
     auto update_flx = tl.AddTask(
-        set_flx, parthenon::Update::UpdateWithFluxDivergence<MeshData<Real>>, mu0.get(),
+        update_dep, parthenon::Update::UpdateWithFluxDivergence<MeshData<Real>>, mu0.get(),
         mu1.get(), integrator->gam0[stage - 1], integrator->gam1[stage - 1],
         integrator->beta[stage - 1] * integrator->dt);
     // -------------- CT step 3b. (RK update magnetic face varibles) --------------
@@ -572,6 +583,8 @@ TaskCollection HydroDriver::MakeTaskCollection(BlockList_t &blocks, int stage) {
                      mu1.get(), integrator->gam0[stage - 1], integrator->gam1[stage - 1],
                      integrator->beta[stage - 1] * integrator->dt);
     }
+
+
     // Add non-operator split source terms.
     // Note: Directly update the "cons" variables of mu0 based on the "prim" variables
     // of mu0 as the "cons" variables have already been updated in this stage from the
@@ -612,7 +625,15 @@ TaskCollection HydroDriver::MakeTaskCollection(BlockList_t &blocks, int stage) {
     // -------------- CT step 6 (cons -> prim) --------------
     auto fill_derived =
         tl.AddTask(none, parthenon::Update::FillDerived<MeshData<Real>>, mu0.get());
+
+    if (hydro_pkg->Param<bool>("ct_fofc_diagnostics")) {
+      tl.AddTask(
+          fill_derived, Hydro::CTMHD::CompareCTTrialState,
+          mu0.get(), stage);
+    }
   }
+
+
   const auto &diffint = hydro_pkg->Param<DiffInt>("diffint");
   // If any tasks modify the conserved variables before this place and after FillDerived,
   // then the STS tasks should be updated to not assume prim and cons are in sync.

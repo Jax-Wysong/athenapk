@@ -5,16 +5,26 @@
 // reserved. Licensed under the BSD 3-Clause License (the "LICENSE").
 //========================================================================================
 
+#include <cstdint>
+#include <iostream>
 #include <string>
 #include <vector>
+#include <iomanip>
+#include <sstream>
 
 // Parthenon headers
 #include <parthenon/package.hpp>
+#include "interface/update.hpp"
+
 
 // AthenaPK headers
 #include "../../main.hpp"
 #include "ctmhd.hpp"
 #include "ct_update_helpers.hpp"
+#include "ct_fofc_helper.hpp"
+
+// Kokkos headers
+#include <Kokkos_MathematicalFunctions.hpp>
 
 
 using namespace parthenon::package::prelude;
@@ -501,6 +511,182 @@ void center_Mag_Field(MeshData<Real> *md) {
         cons(IB2, k, j, i) = b2_ct;
         cons(IB3, k, j, i) = b3_ct;
       });
+}
+
+TaskStatus FirstOrderFluxCorrectCT(
+    MeshData<Real> *mu0, MeshData<Real> *mu1,
+    const Real gam0, const Real gam1, const Real beta_dt)
+{
+  // Diagnostic only: predict the source-free FV/CT stage without modifying
+  // conserved variables, staggered fields, face fluxes or edge EMFs.
+  auto pmb = mu0->GetBlockData(0)->GetBlockPointer();
+  IndexRange ib = pmb->cellbounds.GetBoundsI(IndexDomain::interior);
+  IndexRange jb = pmb->cellbounds.GetBoundsJ(IndexDomain::interior);
+  IndexRange kb = pmb->cellbounds.GetBoundsK(IndexDomain::interior);
+
+  const auto &mu0_cons_pack =
+      mu0->PackVariablesAndFluxes(std::vector<std::string>{"cons"});
+  const auto &mu1_cons_pack = mu1->PackVariables(std::vector<std::string>{"cons"});
+
+  const auto &mu0_Bface_pack =
+      mu0->PackVariablesAndFluxes(std::vector<std::string>{"Bface"});
+  const auto &mu1_Bface_pack =
+      mu1->PackVariablesAndFluxes(std::vector<std::string>{"Bface"});
+  auto pkg = pmb->packages.Get("Hydro");
+
+  const auto &trial_pack =
+      mu0->PackVariables(std::vector<std::string>{"ct_fofc_trial"});
+
+  const bool correct_ct_energy = pkg->Param<bool>("ct_energy_correction");
+
+  const int ndim = pmb->pmy_mesh->ndim;
+
+  constexpr int NVAR = IB3 + 1; // Eight physical CT-MHD components, no GLM psi.
+  std::int64_t num_bad = 0;
+
+    Kokkos::parallel_reduce(
+        "DiagnoseCTTrialState",
+        Kokkos::MDRangePolicy<Kokkos::Rank<4>>(
+            DevExecSpace(), {0, kb.s, jb.s, ib.s},
+            {mu0_cons_pack.GetDim(5), kb.e + 1, jb.e + 1, ib.e + 1},
+            {1, 1, 1, ib.e + 1 - ib.s}),
+        KOKKOS_LAMBDA(const int b, const int k, const int j, const int i,
+                      std::int64_t &lnum_bad) {
+          const auto &coords = mu0_cons_pack.GetCoords(b);
+          const auto &mu0_cons = mu0_cons_pack(b);
+          Real new_cons[NVAR];
+          for (auto v = 0; v < NVAR; v++) {
+            new_cons[v] =
+                gam0 * mu0_cons(v, k, j, i) + gam1 * mu1_cons_pack(b, v, k, j, i) +
+                beta_dt *
+                    parthenon::Update::FluxDivHelper(v, k, j, i, ndim, coords, mu0_cons);
+          }
+
+          // Update magnetic field
+          Hydro::CTMHD::PredictCTStageConserved(
+            mu0_Bface_pack(b), mu1_Bface_pack(b),
+            coords, ndim,
+            k, j, i,
+            gam0, gam1,
+            beta_dt,
+            correct_ct_energy,
+            new_cons);
+
+          for (int v = 0; v < NVAR; ++v){
+            trial_pack(b, v, k, j, i) = new_cons[v];
+          }
+
+          for (int v = 0; v < NVAR; ++v) {
+            if (!Kokkos::isfinite(new_cons[v])) {
+              ++lnum_bad;
+              return;
+            }
+          }
+          // Check density before dividing by it. Count each bad cell once.
+          if (new_cons[IDN] <= 0.0) {
+            ++lnum_bad;
+            return;
+          }
+
+          // Thermal energy density has the same sign as pressure for gamma > 1.
+          const Real thermal_energy =
+              new_cons[IEN] -
+              0.5 * (SQR(new_cons[IM1]) + SQR(new_cons[IM2]) + SQR(new_cons[IM3])) /
+                  new_cons[IDN] -
+              0.5 * (SQR(new_cons[IB1]) + SQR(new_cons[IB2]) + SQR(new_cons[IB3]));
+          if (!Kokkos::isfinite(thermal_energy) || thermal_energy <= 0.0) {
+            ++lnum_bad;
+          }
+        },
+        Kokkos::Sum<std::int64_t>(num_bad));
+
+  const std::int64_t num_cells =
+      static_cast<std::int64_t>(mu0_cons_pack.GetDim(5)) * (kb.e - kb.s + 1) *
+      (jb.e - jb.s + 1) * (ib.e - ib.s + 1);
+  std::cout << "[CT trial diagnostic] rank=" << parthenon::Globals::my_rank
+            << " local_pack_cells=" << num_cells << " invalid_trial_cells=" << num_bad
+            << std::endl;
+
+  return TaskStatus::complete;
+
+}
+
+// diagnostic only -- checking if predicted stage update
+// is actually equal to the real stage update value
+TaskStatus CompareCTTrialState(MeshData<Real> *mu0, const int stage)
+{
+  auto pmb = mu0->GetBlockData(0)->GetBlockPointer();
+  IndexRange ib = pmb->cellbounds.GetBoundsI(IndexDomain::interior);
+  IndexRange jb = pmb->cellbounds.GetBoundsJ(IndexDomain::interior);
+  IndexRange kb = pmb->cellbounds.GetBoundsK(IndexDomain::interior);
+
+  const auto &mu0_cons_pack = mu0->PackVariables(std::vector<std::string>{"cons"});
+  const auto &mu0_trial_cons_pack = mu0->PackVariables(std::vector<std::string>{"ct_fofc_trial"});
+
+
+  constexpr int NVAR = IB3 + 1; // Eight physical CT-MHD components, no GLM psi.
+  Real max_abs_error;
+  Real max_scaled_error;
+  std::int64_t num_nonfinite = 0;
+
+    Kokkos::parallel_reduce(
+        "CompareCTTrialState",
+        Kokkos::MDRangePolicy<Kokkos::Rank<4>>(
+            DevExecSpace(), {0, kb.s, jb.s, ib.s},
+            {mu0_cons_pack.GetDim(5), kb.e + 1, jb.e + 1, ib.e + 1},
+            {1, 1, 1, ib.e + 1 - ib.s}),
+        KOKKOS_LAMBDA(const int b, const int k, const int j, const int i,
+                      Real &lmax_abs_error, Real &lmax_scaled_error, std::int64_t &lnum_nonfinite) {
+          const auto &cons = mu0_cons_pack(b);
+          const auto &trial_cons = mu0_trial_cons_pack(b);
+          for (int v = 0; v < NVAR; ++v){
+            const Real predicted = trial_cons(v, k, j, i);
+            const Real actual = cons(v, k, j, i);
+
+            if (!Kokkos::isfinite(predicted) || !Kokkos::isfinite(actual)) {
+              ++lnum_nonfinite;
+              continue;
+            }
+
+            const Real d = Kokkos::fabs(predicted - actual);
+
+            if (!Kokkos::isfinite(d)) {
+              ++lnum_nonfinite;
+              continue;
+            }
+
+            const Real s = Kokkos::fmax(
+                1.0, Kokkos::fmax(Kokkos::fabs(predicted), Kokkos::fabs(actual)));
+            const Real r = d / s;
+
+            lmax_abs_error = Kokkos::fmax(lmax_abs_error, d);
+            lmax_scaled_error = Kokkos::fmax(lmax_scaled_error, r);
+          }
+        },
+        Kokkos::Max<Real>(max_abs_error),
+        Kokkos::Max<Real>(max_scaled_error),
+        Kokkos::Sum<std::int64_t>(num_nonfinite));
+
+  const std::int64_t num_cells =
+      static_cast<std::int64_t>(mu0_cons_pack.GetDim(5)) * (kb.e - kb.s + 1) *
+      (jb.e - jb.s + 1) * (ib.e - ib.s + 1);
+  const bool agrees =
+      num_nonfinite == 0 && max_scaled_error <= 1.0e-12;
+
+  std::ostringstream message;
+  message << std::scientific << std::setprecision(16)
+          << "[CT trial comparison] rank=" << parthenon::Globals::my_rank
+          << " stage=" << stage
+          << " local_pack_cells=" << num_cells
+          << " max_abs_error=" << max_abs_error
+          << " max_scaled_error=" << max_scaled_error
+          << " nonfinite_comparisons=" << num_nonfinite
+          << " status=" << (agrees ? "PASS" : "FAIL");
+
+  std::cout << message.str() << std::endl;
+
+  return TaskStatus::complete;
+
 }
 
 } // namespace Hydro::CTMHD

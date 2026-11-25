@@ -407,6 +407,15 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
   }
   pkg->AddParam<>("ct_energy_correction", ct_energy_correction);
 
+  const bool ct_fofc_diagnostics =
+      pin->GetOrAddBoolean("hydro", "ct_fofc_diagnostics", false);
+
+  PARTHENON_REQUIRE(
+      !ct_fofc_diagnostics || fluid == Fluid::ctmhd,
+      "CT FOFC diagnostics currently support only ctmhd.");
+
+  pkg->AddParam<>("ct_fofc_diagnostics", ct_fofc_diagnostics);
+
   // Following params should (currently) be present independent of solver because
   // they're all used in the main loop.
   pkg->AddParam<>("calc_c_h", calc_c_h);
@@ -959,6 +968,15 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
   m = Metadata({Metadata::Cell, Metadata::Derived}, std::vector<int>({nhydro + nscalars}),
                prim_labels);
   pkg->AddField("prim", m);
+
+
+  if (ct_fofc_diagnostics) {
+    Metadata trial_m(
+        {Metadata::Cell, Metadata::Derived, Metadata::OneCopy},
+        std::vector<int>{nhydro});
+
+    pkg->AddField("ct_fofc_trial", trial_m);
+  }
 
   if (fluid == Fluid::ctmhd || fluid == Fluid::ucthlldmhd) {
     // gives us 3 face vectors accessed like
