@@ -359,7 +359,14 @@ TaskCollection HydroDriver::MakeTaskCollection(BlockList_t &blocks, int stage) {
     TaskRegion &ct_self_test_region = tc.AddRegion(1);
     auto &tl = ct_self_test_region[0];
 
-    tl.AddTask(none, Hydro::CTMHD::TestCTStateAdmissibility);
+    auto admissibility_test =
+        tl.AddTask(none, Hydro::CTMHD::TestCTStateAdmissibility);
+    // The isolated LLF check exercises all three face directions and therefore
+    // needs 3D flux storage. Keep existing 1D/2D diagnostics available unchanged.
+    if (pmesh->ndim == 3) {
+      auto &md = pmesh->mesh_data.GetOrAdd("base", 0);
+      tl.AddTask(admissibility_test, Hydro::CTMHD::TestCTLLFFluxes, md.get());
+    }
   }
 
   // Number of task lists that can be executed indepenently and thus *may*

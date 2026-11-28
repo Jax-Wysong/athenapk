@@ -34,6 +34,9 @@ TaskStatus CompareCTTrialState(MeshData<Real> *mu0, const int stage);
 
 TaskStatus TestCTStateAdmissibility();
 
+// Isolated synthetic flux checks; requires a 3D CT-contact mesh. Not driver-hooked yet.
+TaskStatus TestCTLLFFluxes(MeshData<Real> *md);
+
 } // namespace Hydro::CTMHD
 
 #endif // HYDRO_CTMHD_CTMHD_HPP_

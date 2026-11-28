@@ -5,6 +5,9 @@
 // reserved. Licensed under the BSD 3-Clause License (the "LICENSE").
 //========================================================================================
 
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstdint>
 #include <iostream>
 #include <limits>
@@ -15,11 +18,15 @@
 
 // Parthenon headers
 #include <parthenon/package.hpp>
+#include "interface/meshblock_data.hpp"
 #include "interface/update.hpp"
 
 
 // AthenaPK headers
+#include "../../eos/adiabatic_ctmhd.hpp"
+#include "../../eos/adiabatic_glmmhd.hpp"
 #include "../../main.hpp"
+#include "../rsolvers/rsolvers.hpp"
 #include "ctmhd.hpp"
 #include "ct_update_helpers.hpp"
 #include "ct_fofc_helper.hpp"
@@ -674,6 +681,263 @@ TaskStatus CompareCTTrialState(MeshData<Real> *mu0, const int stage)
 
   return TaskStatus::complete;
 
+}
+
+namespace {
+
+// Independent host reference in normal/tangent coordinates, used only by the
+// synthetic LLF diagnostic. Do not reuse the solver's flux or wave-speed formulas.
+void CTLLFReferenceState(const Real *q, const Real b_normal, const Real gamma,
+                         Real *u, Real *flux, Real &signal_speed) {
+  const Real rho = q[IDN];
+  const Real pressure = q[IPR];
+  const Real velocity[3] = {q[IV1], q[IV2], q[IV3]};
+  const Real magnetic[3] = {b_normal, q[IB2], q[IB3]};
+  Real velocity_squared = 0.0;
+  Real magnetic_squared = 0.0;
+  Real velocity_dot_magnetic = 0.0;
+  for (int d = 0; d < 3; ++d) {
+    velocity_squared += velocity[d] * velocity[d];
+    magnetic_squared += magnetic[d] * magnetic[d];
+    velocity_dot_magnetic += velocity[d] * magnetic[d];
+  }
+
+  const Real energy = pressure / (gamma - 1.0) +
+                      0.5 * rho * velocity_squared + 0.5 * magnetic_squared;
+  const Real total_pressure = pressure + 0.5 * magnetic_squared;
+  u[IDN] = rho;
+  u[IEN] = energy;
+  flux[IDN] = rho * velocity[0];
+  flux[IEN] = (energy + total_pressure) * velocity[0] -
+              b_normal * velocity_dot_magnetic;
+  for (int d = 0; d < 3; ++d) {
+    u[IM1 + d] = rho * velocity[d];
+    u[IB1 + d] = magnetic[d];
+    flux[IM1 + d] = rho * velocity[0] * velocity[d] - b_normal * magnetic[d];
+    if (d == 0) flux[IM1 + d] += total_pressure;
+    flux[IB1 + d] = velocity[0] * magnetic[d] - b_normal * velocity[d];
+  }
+
+  // Characteristic speed evaluated independently of eos.FastMagnetosonicSpeed.
+  const Real sound_squared = gamma * pressure / rho;
+  const Real alfven_squared = magnetic_squared / rho;
+  const Real normal_alfven_squared = b_normal * b_normal / rho;
+  const Real sum = sound_squared + alfven_squared;
+  const Real discriminant =
+      std::max(0.0, sum * sum - 4.0 * sound_squared * normal_alfven_squared);
+  signal_speed = std::abs(velocity[0]) +
+                 std::sqrt(0.5 * (sum + std::sqrt(discriminant)));
+}
+
+} // namespace
+
+TaskStatus TestCTLLFFluxes(MeshData<Real> *md) {
+  auto pmb = md->GetBlockData(0)->GetBlockSharedPointer();
+  auto hydro_pkg = pmb->packages.Get("Hydro");
+  PARTHENON_REQUIRE(hydro_pkg->Param<Fluid>("fluid") == Fluid::ctmhd,
+                    "CT LLF self-test requires fluid=ctmhd.");
+  PARTHENON_REQUIRE(pmb->pmy_mesh->ndim == 3,
+                    "CT LLF self-test requires a 3D mesh to test all face directions.");
+  const auto eos = hydro_pkg->Param<AdiabaticCTMHDEOS>("eos");
+  const Real gamma = eos.GetGamma();
+  PARTHENON_REQUIRE(std::isfinite(gamma) && gamma > 1.0,
+                    "CT LLF self-test requires a finite gamma greater than one.");
+
+  // Initialize from the MeshBlock, not its live MeshBlockData: even a non-shallow
+  // copy of MeshBlockData shares OneCopy fields. This allocates independent prim,
+  // cons, and associated cons flux storage without registering another live stage.
+  parthenon::MeshBlockData<Real> scratch("ct_llf_test");
+  scratch.Initialize(pmb, std::vector<std::string>{"prim", "cons"});
+
+  auto prim = scratch.PackVariables(std::vector<std::string>{"prim"});
+  auto cons = scratch.PackVariablesAndFluxes(std::vector<std::string>{"cons"});
+  const int num_vars = cons.GetDim(4);
+  PARTHENON_REQUIRE(prim.GetDim(4) == num_vars && num_vars >= IB3 + 1,
+                    "CT LLF self-test requires matching physical/scalar variable packs.");
+
+  const auto ib = pmb->cellbounds.GetBoundsI(IndexDomain::interior);
+  const auto jb = pmb->cellbounds.GetBoundsJ(IndexDomain::interior);
+  const auto kb = pmb->cellbounds.GetBoundsK(IndexDomain::interior);
+  const int i = ib.s;
+  const int j = jb.s;
+  const int k = kb.s;
+  PARTHENON_REQUIRE(i > 0 && j > 0 && k > 0,
+                    "CT LLF self-test requires one lower ghost cell in each direction.");
+
+  constexpr int NUM_CASES = 6;
+  const char *case_names[NUM_CASES] = {
+      "uniform_positive", "uniform_negative", "uniform_normal_override",
+      "jump_positive", "jump_negative", "jump_normal_override"};
+  const Real b_normal = 0.5;
+  const Real tolerance = 1.0e-12;
+  const Real nan_value = std::numeric_limits<Real>::quiet_NaN();
+
+  // States are stored in normal/tangent coordinates, independently of direction.
+  // Include configured passive scalars without adding fields to the live package.
+  Kokkos::View<Real ***, parthenon::DevMemSpace> states(
+      "ct_llf_test_states", NUM_CASES, 2, num_vars);
+  auto states_host = Kokkos::create_mirror_view(states);
+  const std::array<Real, IB3 + 1> left =
+      {1.2, 0.35, -0.2, 0.15, 0.9, b_normal, 0.4, -0.3};
+  const std::array<Real, IB3 + 1> right =
+      {0.7, -0.1, 0.25, -0.3, 1.1, b_normal, -0.2, 0.6};
+  for (int c = 0; c < NUM_CASES; ++c) {
+    for (int v = 0; v < num_vars; ++v) {
+      states_host(c, 0, v) = (v <= IB3) ? left[v] : 0.25;
+      states_host(c, 1, v) = (v <= IB3) ? ((c < 3) ? left[v] : right[v])
+                                       : ((c < 3) ? 0.25 : 0.75);
+    }
+    if (c == 1) {
+      states_host(c, 0, IV1) = -0.35;
+      states_host(c, 1, IV1) = -0.35;
+    } else if (c == 4) {
+      // Equal densities keep this mass flux negative for any valid gamma,
+      // while pressure, velocity, transverse B, and scalar concentrations jump.
+      states_host(c, 1, IDN) = left[IDN];
+      states_host(c, 0, IV1) = -0.9;
+      states_host(c, 1, IV1) = -0.55;
+    }
+    if (c == 2 || c == 5) {
+      // Must not affect fluxes: the supplied normal field overrides both inputs.
+      states_host(c, 0, IB1) = -1.7;
+      states_host(c, 1, IB1) = 2.3;
+    }
+  }
+  Kokkos::deep_copy(states, states_host);
+
+  Kokkos::View<Real ***, parthenon::DevMemSpace> measured(
+      "ct_llf_test_fluxes", NUM_CASES, 3, num_vars);
+  // One device work item intentionally reuses the same two scratch cells. Running
+  // cases concurrently would race on these packs. No live simulation data is used.
+  Kokkos::parallel_for(
+      "TestCTLLFFluxes", Kokkos::RangePolicy<parthenon::DevExecSpace>(0, 1),
+      KOKKOS_LAMBDA(const int /*unused*/) {
+        auto test_cons = cons;
+        for (int c = 0; c < NUM_CASES; ++c) {
+          for (int d = 0; d < 3; ++d) {
+            const int ivx = IV1 + d;
+            const int kl = k - (d == 2);
+            const int jl = j - (d == 1);
+            const int il = i - (d == 0);
+            for (int v = 0; v < num_vars; ++v) {
+              prim(v, kl, jl, il) = states(c, 0, v);
+              prim(v, k, j, i) = states(c, 1, v);
+              test_cons.flux(ivx, v, k, j, i) = nan_value;
+            }
+            for (int t = 0; t < 3; ++t) {
+              const int global_component = (d + t) % 3;
+              prim(IV1 + global_component, kl, jl, il) = states(c, 0, IV1 + t);
+              prim(IV1 + global_component, k, j, i) = states(c, 1, IV1 + t);
+              prim(IB1 + global_component, kl, jl, il) = states(c, 0, IB1 + t);
+              prim(IB1 + global_component, k, j, i) = states(c, 1, IB1 + t);
+            }
+
+            ::Riemann<Fluid::ctmhd, RiemannSolver::llf>::Solve(
+                eos, k, j, i, ivx, prim, test_cons, b_normal);
+
+            // Return fluxes to normal/tangent ordering for reference and cyclic checks.
+            for (int v = 0; v < num_vars; ++v) {
+              int global_v = v;
+              if (v >= IM1 && v <= IM3) global_v = IM1 + (d + v - IM1) % 3;
+              if (v >= IB1 && v <= IB3) global_v = IB1 + (d + v - IB1) % 3;
+              measured(c, d, v) = test_cons.flux(ivx, global_v, k, j, i);
+            }
+          }
+        }
+      });
+  // A host mirror may alias host-accessible device storage, so fence explicitly
+  // before inspection and before the scratch container can be destroyed.
+  Kokkos::fence();
+  const auto measured_host =
+      Kokkos::create_mirror_view_and_copy(parthenon::HostMemSpace(), measured);
+
+  bool all_passed = true;
+  for (int c = 0; c < NUM_CASES; ++c) {
+    Real ul[IB3 + 1], ur[IB3 + 1], fl[IB3 + 1], fr[IB3 + 1];
+    Real ql[IB3 + 1], qr[IB3 + 1];
+    for (int v = 0; v <= IB3; ++v) {
+      ql[v] = states_host(c, 0, v);
+      qr[v] = states_host(c, 1, v);
+    }
+    Real speed_left, speed_right;
+    CTLLFReferenceState(ql, b_normal, gamma, ul, fl, speed_left);
+    CTLLFReferenceState(qr, b_normal, gamma, ur, fr, speed_right);
+    const Real speed = std::max(speed_left, speed_right);
+    const Real reference_mass_flux =
+        (c < 3) ? fl[IDN] : 0.5 * (fl[IDN] + fr[IDN] - speed * (ur[IDN] - ul[IDN]));
+    const bool negative_case = c == 1 || c == 4;
+    bool passed = std::isfinite(reference_mass_flux) &&
+                  (negative_case ? reference_mass_flux < 0.0 : reference_mass_flux > 0.0);
+    Real max_abs_error = 0.0;
+    Real max_scaled_error = 0.0;
+    Real max_cyclic_error = 0.0;
+    Real max_override_error = 0.0;
+    int nonfinite = 0;
+    int nonzero_normal_fluxes = 0;
+
+    for (int d = 0; d < 3; ++d) {
+      for (int v = 0; v < num_vars; ++v) {
+        Real expected;
+        if (v <= IB3) {
+          // Identical states are checked directly against physical flux, not LLF.
+          expected = (c < 3) ? fl[v] : 0.5 * (fl[v] + fr[v] - speed * (ur[v] - ul[v]));
+        } else {
+          // Native FOFC uses mass-flux upwinding for scalar concentrations.
+          expected = reference_mass_flux * states_host(c, negative_case ? 1 : 0, v);
+        }
+        const Real actual = measured_host(c, d, v);
+        if (!std::isfinite(actual) || !std::isfinite(expected)) {
+          ++nonfinite;
+          continue;
+        }
+        const Real scale = std::max(1.0, std::max(std::abs(actual), std::abs(expected)));
+        const Real error = std::abs(actual - expected);
+        max_abs_error = std::max(max_abs_error, error);
+        max_scaled_error = std::max(max_scaled_error, error / scale);
+        if (v == IB1 && actual != 0.0) ++nonzero_normal_fluxes;
+
+        const Real x1_flux = measured_host(c, 0, v);
+        if (!std::isfinite(x1_flux)) {
+          passed = false;
+        } else {
+          const Real cyclic_scale =
+              std::max(1.0, std::max(std::abs(actual), std::abs(x1_flux)));
+          max_cyclic_error =
+              std::max(max_cyclic_error, std::abs(actual - x1_flux) / cyclic_scale);
+        }
+        if (c == 2 || c == 5) {
+          const Real baseline = measured_host((c == 2) ? 0 : 3, d, v);
+          if (!std::isfinite(baseline)) {
+            passed = false;
+          } else {
+            const Real override_scale =
+                std::max(1.0, std::max(std::abs(actual), std::abs(baseline)));
+            max_override_error = std::max(
+                max_override_error, std::abs(actual - baseline) / override_scale);
+          }
+        }
+      }
+    }
+    passed = passed && nonfinite == 0 && nonzero_normal_fluxes == 0 &&
+             max_scaled_error <= tolerance && max_cyclic_error <= tolerance &&
+             max_override_error <= tolerance;
+    all_passed = all_passed && passed;
+    std::ostringstream message;
+    message << std::scientific << std::setprecision(16)
+            << "[CT LLF self-test] rank=" << parthenon::Globals::my_rank
+            << " case=" << case_names[c] << " directions=3"
+            << " components=" << num_vars << " max_abs_error=" << max_abs_error
+            << " max_scaled_error=" << max_scaled_error
+            << " max_cyclic_scaled_error=" << max_cyclic_error
+            << " max_override_scaled_error=" << max_override_error
+            << " reference_mass_flux=" << reference_mass_flux
+            << " nonfinite=" << nonfinite
+            << " nonzero_normal_fluxes=" << nonzero_normal_fluxes
+            << " tolerance=" << tolerance << " status=" << (passed ? "PASS" : "FAIL");
+    std::cout << message.str() << std::endl;
+  }
+  PARTHENON_REQUIRE(all_passed, "CT LLF self-test failed a synthetic flux check.");
+  return TaskStatus::complete;
 }
 
 TaskStatus TestCTStateAdmissibility() {
